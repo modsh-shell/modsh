@@ -57,7 +57,7 @@
   - [x] SimpleCommand
   - [x] Pipeline
   - [x] List (AND/OR)
-  - [~] CompoundCommand — Subshell/Group done, if/for/while/case TODO
+  - [x] CompoundCommand — if/for/while/case/subshell/group all done
   - [ ] FunctionDefinition
 - [x] Implement recursive descent parser
 - [ ] Error recovery — parse partial input gracefully
