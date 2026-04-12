@@ -16,16 +16,16 @@
   - [x] Add `.cargo/config.toml` with workspace settings
   - [x] Configure `rust-toolchain.toml` (stable channel)
 
-- [ ] **CI/CD bootstrap**
-  - [ ] Add GitHub Actions workflow — `ci.yml`
-    - [ ] `cargo check`
-    - [ ] `cargo test`
-    - [ ] `cargo clippy -- -D warnings`
-    - [ ] `cargo fmt --check`
-    - [ ] `cargo audit`
-  - [ ] Add `dependabot.yml` for automated dependency updates
-  - [ ] Add PR template (`.github/pull_request_template.md`)
-  - [ ] Add issue templates (bug, feature)
+- [x] **CI/CD bootstrap**
+  - [x] Add GitHub Actions workflow — `ci.yml`
+    - [x] `cargo check`
+    - [x] `cargo test`
+    - [x] `cargo clippy -- -D warnings`
+    - [x] `cargo fmt --check`
+    - [x] `cargo audit`
+  - [x] Add `dependabot.yml` for automated dependency updates
+  - [x] Add PR template (`.github/pull_request_template.md`)
+  - [x] Add issue templates (bug, feature)
 
 - [ ] **Dev tooling**
   - [ ] `cargo install cargo-audit`
