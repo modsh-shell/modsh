@@ -293,13 +293,9 @@ impl Parser {
             | Token::Operator(Operator::Or) => true,
             // Note: Background (&) is NOT incomplete - it's a valid command terminator
             // Opening brackets without closing
-            Token::Operator(Operator::LBrace)
-            | Token::Operator(Operator::LParen) => true,
+            Token::Operator(Operator::LBrace) | Token::Operator(Operator::LParen) => true,
             // Compound command keywords that need closing
-            Token::Word(w) => matches!(
-                w.as_str(),
-                "if" | "while" | "for" | "case" | "function"
-            ),
+            Token::Word(w) => matches!(w.as_str(), "if" | "while" | "for" | "case" | "function"),
             _ => false,
         }
     }
@@ -442,7 +438,7 @@ impl Parser {
             }
             Token::Word(w) => {
                 let word = w.clone(); // Clone to avoid borrow issues
-                // Check for compound command keywords (they take priority over terminators)
+                                      // Check for compound command keywords (they take priority over terminators)
                 match word.as_str() {
                     "if" => self.parse_if(),
                     "for" => self.parse_for(),
@@ -620,7 +616,9 @@ impl Parser {
         }
 
         // Check that name is not a reserved word
-        let reserved = ["if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac", "in"];
+        let reserved = [
+            "if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac", "in",
+        ];
         if reserved.contains(&name) {
             return Ok(None);
         }
@@ -648,19 +646,17 @@ impl Parser {
                 self.expect_operator(Operator::RBrace)?;
                 Ok(body)
             }
-            Token::Word(w) => {
-                match w.as_str() {
-                    "if" => Ok(Box::new(self.parse_if()?)),
-                    "for" => Ok(Box::new(self.parse_for()?)),
-                    "while" => Ok(Box::new(self.parse_while()?)),
-                    "case" => Ok(Box::new(self.parse_case()?)),
-                    "function" => Ok(Box::new(self.parse_function()?)),
-                    _ => Err(ParseError::Expected {
-                        expected: "function body".to_string(),
-                        got: self.peek().clone(),
-                    }),
-                }
-            }
+            Token::Word(w) => match w.as_str() {
+                "if" => Ok(Box::new(self.parse_if()?)),
+                "for" => Ok(Box::new(self.parse_for()?)),
+                "while" => Ok(Box::new(self.parse_while()?)),
+                "case" => Ok(Box::new(self.parse_case()?)),
+                "function" => Ok(Box::new(self.parse_function()?)),
+                _ => Err(ParseError::Expected {
+                    expected: "function body".to_string(),
+                    got: self.peek().clone(),
+                }),
+            },
             _ => Err(ParseError::Expected {
                 expected: "function body".to_string(),
                 got: self.peek().clone(),
@@ -789,7 +785,11 @@ impl Parser {
             LRedirect::Input { fd } => (fd, RedirectKind::Input, String::new()),
             LRedirect::Output { fd } => (fd, RedirectKind::Output, String::new()),
             LRedirect::Append { fd } => (fd, RedirectKind::Append, String::new()),
-            LRedirect::Heredoc { delimiter: _, quoted: _, body } => {
+            LRedirect::Heredoc {
+                delimiter: _,
+                quoted: _,
+                body,
+            } => {
                 // Heredoc body is stored in target field for now
                 // In full implementation, this would be handled specially
                 (None, RedirectKind::Heredoc, body)
@@ -901,7 +901,9 @@ mod tests {
         match cmd {
             Command::If(if_clause) => {
                 // Condition should be 'true'
-                assert!(matches!(*if_clause.then_branch, Command::Simple(ref s) if s.words == vec!["echo", "yes"]));
+                assert!(
+                    matches!(*if_clause.then_branch, Command::Simple(ref s) if s.words == vec!["echo", "yes"])
+                );
                 assert!(if_clause.elif_branches.is_empty());
                 assert!(if_clause.else_branch.is_none());
             }
@@ -938,7 +940,9 @@ mod tests {
         match cmd {
             Command::While(while_loop) => {
                 // Condition should be 'true', body should be 'echo loop'
-                assert!(matches!(*while_loop.body, Command::Simple(ref s) if s.words == vec!["echo", "loop"]));
+                assert!(
+                    matches!(*while_loop.body, Command::Simple(ref s) if s.words == vec!["echo", "loop"])
+                );
             }
             _ => panic!("Expected while command"),
         }
@@ -963,7 +967,9 @@ mod tests {
         let cmd = parse("(echo hello)").unwrap();
         match cmd {
             Command::Subshell(inner) => {
-                assert!(matches!(*inner, Command::Simple(ref s) if s.words == vec!["echo", "hello"]));
+                assert!(
+                    matches!(*inner, Command::Simple(ref s) if s.words == vec!["echo", "hello"])
+                );
             }
             _ => panic!("Expected subshell"),
         }
@@ -1222,7 +1228,9 @@ mod tests {
                 // Left side should be (cmd1 && cmd2) || cmd3
                 match left.as_ref() {
                     Command::Or(or_left, or_right) => {
-                        assert!(matches!(**or_right, Command::Simple(ref s) if s.words == vec!["cmd3"]));
+                        assert!(
+                            matches!(**or_right, Command::Simple(ref s) if s.words == vec!["cmd3"])
+                        );
                         // or_left should be cmd1 && cmd2
                         assert!(matches!(**or_left, Command::And(..)));
                     }
@@ -1353,7 +1361,8 @@ mod tests {
         //     (echo one | cat)
         //   fi
         // done
-        let cmd = parse("for i in 1 2; do if [ $i -eq 1 ]; then (echo one | cat); fi; done").unwrap();
+        let cmd =
+            parse("for i in 1 2; do if [ $i -eq 1 ]; then (echo one | cat); fi; done").unwrap();
         match cmd {
             Command::For(for_loop) => {
                 assert!(matches!(*for_loop.body, Command::If(..)));

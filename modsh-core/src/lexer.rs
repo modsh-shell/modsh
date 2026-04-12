@@ -224,7 +224,11 @@ impl<'a> Lexer<'a> {
                     } else {
                         let (delimiter, quoted) = self.read_delimiter()?;
                         let body = self.read_heredoc_body(&delimiter)?;
-                        Ok(Token::Redirect(Redirect::Heredoc { delimiter, quoted, body }))
+                        Ok(Token::Redirect(Redirect::Heredoc {
+                            delimiter,
+                            quoted,
+                            body,
+                        }))
                     }
                 } else if self.peek() == '>' {
                     self.advance();
@@ -266,7 +270,11 @@ impl<'a> Lexer<'a> {
                     } else {
                         let (delimiter, quoted) = self.read_delimiter()?;
                         let body = self.read_heredoc_body(&delimiter)?;
-                        Ok(Token::Redirect(Redirect::Heredoc { delimiter, quoted, body }))
+                        Ok(Token::Redirect(Redirect::Heredoc {
+                            delimiter,
+                            quoted,
+                            body,
+                        }))
                     }
                 } else if self.peek() == '>' {
                     self.advance();
@@ -399,10 +407,7 @@ impl<'a> Lexer<'a> {
         while !self.is_at_end() {
             let ch = self.peek();
             if ch.is_ascii_whitespace()
-                || matches!(
-                    ch,
-                    '|' | '&' | ';' | '(' | ')' | '<' | '>' | '{' | '}'
-                )
+                || matches!(ch, '|' | '&' | ';' | '(' | ')' | '<' | '>' | '{' | '}')
             {
                 break;
             }
@@ -544,42 +549,66 @@ mod tests {
     #[test]
     fn test_redirections() {
         let tokens = tokenize("cmd < in > out >> append").unwrap();
-        assert!(matches!(tokens[1], Token::Redirect(Redirect::Input { fd: None })));
-        assert!(matches!(tokens[3], Token::Redirect(Redirect::Output { fd: None })));
-        assert!(matches!(tokens[5], Token::Redirect(Redirect::Append { fd: None })));
+        assert!(matches!(
+            tokens[1],
+            Token::Redirect(Redirect::Input { fd: None })
+        ));
+        assert!(matches!(
+            tokens[3],
+            Token::Redirect(Redirect::Output { fd: None })
+        ));
+        assert!(matches!(
+            tokens[5],
+            Token::Redirect(Redirect::Append { fd: None })
+        ));
     }
 
     #[test]
     fn test_fd_redirections() {
         let tokens = tokenize("cmd 2> err 2>> errappend").unwrap();
-        assert!(matches!(tokens[1], Token::Redirect(Redirect::Output { fd: Some(2) })));
-        assert!(matches!(tokens[3], Token::Redirect(Redirect::Append { fd: Some(2) })));
+        assert!(matches!(
+            tokens[1],
+            Token::Redirect(Redirect::Output { fd: Some(2) })
+        ));
+        assert!(matches!(
+            tokens[3],
+            Token::Redirect(Redirect::Append { fd: Some(2) })
+        ));
     }
 
     #[test]
     fn test_herestring() {
         let tokens = tokenize("cat <<< hello").unwrap();
-        assert!(matches!(tokens[1], Token::Redirect(Redirect::Herestring { word: ref w }) if w == "hello"));
+        assert!(
+            matches!(tokens[1], Token::Redirect(Redirect::Herestring { word: ref w }) if w == "hello")
+        );
     }
 
     #[test]
     fn test_heredoc() {
         let input = "cat << EOF\nline1\nline2\nEOF\n";
         let tokens = tokenize(input).unwrap();
-        assert!(matches!(tokens[1], Token::Redirect(Redirect::Heredoc { delimiter: ref d, body: ref b, .. }) if d == "EOF" && b == "line1\nline2"));
+        assert!(
+            matches!(tokens[1], Token::Redirect(Redirect::Heredoc { delimiter: ref d, body: ref b, .. }) if d == "EOF" && b == "line1\nline2")
+        );
     }
 
     #[test]
     fn test_heredoc_quoted_delimiter() {
         let input = "cat << 'EOF'\ncontent\nEOF\n";
         let tokens = tokenize(input).unwrap();
-        assert!(matches!(tokens[1], Token::Redirect(Redirect::Heredoc { delimiter: ref d, quoted: true, .. }) if d == "EOF"));
+        assert!(
+            matches!(tokens[1], Token::Redirect(Redirect::Heredoc { delimiter: ref d, quoted: true, .. }) if d == "EOF")
+        );
     }
 
     #[test]
     fn test_read_write_redirect() {
         let tokens = tokenize("cmd <> file").unwrap();
-        assert!(matches!(tokens[1], Token::Redirect(Redirect::ReadWrite { fd: None })));
+        assert!(matches!(
+            tokens[1],
+            Token::Redirect(Redirect::ReadWrite { fd: None })
+        ));
     }
 
     #[test]
@@ -594,7 +623,9 @@ mod tests {
     fn test_escaped_characters() {
         let tokens = tokenize(r#"echo hello\ world"#).unwrap();
         // Escaped space is kept as part of word (expansion handles the escape)
-        assert!(matches!(tokens[1], Token::Word(ref w) if w == "hello\\ world" || w == "hello world"));
+        assert!(
+            matches!(tokens[1], Token::Word(ref w) if w == "hello\\ world" || w == "hello world")
+        );
     }
 
     #[test]

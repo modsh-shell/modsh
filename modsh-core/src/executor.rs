@@ -161,7 +161,10 @@ impl Executor {
         Ok(last_status)
     }
 
-    fn execute_while(&mut self, while_loop: &crate::parser::WhileLoop) -> Result<ExitStatus, ExecError> {
+    fn execute_while(
+        &mut self,
+        while_loop: &crate::parser::WhileLoop,
+    ) -> Result<ExitStatus, ExecError> {
         let mut last_status = ExitStatus::SUCCESS;
         loop {
             let cond_status = self.execute(&while_loop.condition)?;
@@ -173,7 +176,10 @@ impl Executor {
         Ok(last_status)
     }
 
-    fn execute_case(&mut self, case_stmt: &crate::parser::CaseStatement) -> Result<ExitStatus, ExecError> {
+    fn execute_case(
+        &mut self,
+        case_stmt: &crate::parser::CaseStatement,
+    ) -> Result<ExitStatus, ExecError> {
         // TODO: Pattern matching against case_stmt.word
         let mut last_status = ExitStatus::SUCCESS;
         for (_patterns, body) in &case_stmt.clauses {
@@ -184,7 +190,10 @@ impl Executor {
         Ok(last_status)
     }
 
-    fn execute_function_def(&mut self, func_def: &crate::parser::FunctionDefinition) -> Result<ExitStatus, ExecError> {
+    fn execute_function_def(
+        &mut self,
+        func_def: &crate::parser::FunctionDefinition,
+    ) -> Result<ExitStatus, ExecError> {
         // TODO: Register function in environment
         // For now, just execute the body immediately (not correct behavior)
         self.execute(&func_def.body)
