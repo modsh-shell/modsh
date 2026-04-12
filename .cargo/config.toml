@@ -1,0 +1,10 @@
+[build]
+rustflags = ["-W", "clippy::all", "-W", "clippy::pedantic"]
+
+[alias]
+test-all = "test --workspace"
+lint = "clippy --workspace -- -D warnings"
+fmt-check = "fmt -- --check"
+
+[registries.crates-io]
+protocol = "sparse"

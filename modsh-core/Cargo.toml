@@ -1,0 +1,16 @@
+[package]
+name = "modsh-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "POSIX-compatible shell core for modsh"
+
+[dependencies]
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

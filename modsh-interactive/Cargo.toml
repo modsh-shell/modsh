@@ -1,0 +1,23 @@
+[package]
+name = "modsh-interactive"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Extended interactive layer for modsh"
+
+[dependencies]
+modsh-core = { path = "../modsh-core" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = "1.0"
+toml = { workspace = true }
+crossterm = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

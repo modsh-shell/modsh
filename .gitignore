@@ -1,0 +1,46 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Build artifacts
+/dist/
+*.d
+
+# IDE
+.idea/
+.vscode/
+.windsurf/
+*.swp
+*.swo
+.DS_Store
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# modsh runtime
+*.db
+*.db-shm
+*.db-wal
+context.db
+
+# Logs
+*.log
+
+# Test artifacts
+/test-output/
+/fuzz/corpus/
+/fuzz/artifacts/
+
+# Packaging
+*.deb
+*.rpm
+*.tar.gz
+*.zip
+
+# Credentials
+*.pem
+*.key
+*.p12
