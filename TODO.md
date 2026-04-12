@@ -44,7 +44,7 @@
 - [x] Handle quoting (`'`, `"`, `\`)
 - [x] Handle heredoc tokens — delimiter and body reading done
 - [x] Handle comment stripping
-- [~] Unit tests — token stream correctness — basic tests done, need more edge cases
+- [x] Unit tests — comprehensive edge cases covered (24 tests)
 - [ ] Fuzz testing — malformed input safety
 
 ### 1.2 Parser
