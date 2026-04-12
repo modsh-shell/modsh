@@ -136,7 +136,7 @@ fn token_text(token: &Token) -> String {
             Redirect::Output { .. } => ">".to_string(),
             Redirect::Append { .. } => ">>".to_string(),
             Redirect::Heredoc { .. } => "<<".to_string(),
-            Redirect::Herestring => "<<<".to_string(),
+            Redirect::Herestring { .. } => "<<<".to_string(),
             Redirect::ReadWrite { .. } => "<>".to_string(),
         },
         Token::Comment(c) => format!("#{c}"),

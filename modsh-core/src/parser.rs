@@ -371,11 +371,6 @@ impl Parser {
         }
     }
 
-    /// Parse AND/OR lists with left-associativity
-    fn parse_and_or(&mut self) -> Result<Command, ParseError> {
-        self.parse_and_or_until(&[])
-    }
-
     fn parse_and_or_until(&mut self, terminators: &[&str]) -> Result<Command, ParseError> {
         let mut left = self.parse_pipeline_until(terminators)?;
 
@@ -400,10 +395,6 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_pipeline(&mut self) -> Result<Command, ParseError> {
-        self.parse_pipeline_until(&[])
-    }
-
     fn parse_pipeline_until(&mut self, terminators: &[&str]) -> Result<Command, ParseError> {
         let mut commands = vec![self.parse_command_until(terminators)?];
 
@@ -417,10 +408,6 @@ impl Parser {
         } else {
             Ok(Command::Pipeline(commands))
         }
-    }
-
-    fn parse_command(&mut self) -> Result<Command, ParseError> {
-        self.parse_command_until(&[])
     }
 
     fn parse_command_until(&mut self, terminators: &[&str]) -> Result<Command, ParseError> {
@@ -753,24 +740,6 @@ impl Parser {
             token => Err(ParseError::Expected {
                 expected: "word".to_string(),
                 got: token.clone(),
-            }),
-        }
-    }
-
-    /// Expect case clause terminator (;; or ;& or ;;&)
-    fn expect_case_terminator(&mut self) -> Result<(), ParseError> {
-        match self.peek() {
-            Token::Operator(Operator::Semicolon) => {
-                self.advance();
-                // Check for second ;
-                if matches!(self.peek(), Token::Operator(Operator::Semicolon)) {
-                    self.advance();
-                }
-                Ok(())
-            }
-            _ => Err(ParseError::Expected {
-                expected: ";;".to_string(),
-                got: self.peek().clone(),
             }),
         }
     }
