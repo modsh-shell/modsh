@@ -100,7 +100,7 @@ impl<'a> Expander<'a> {
         while let Some(ch) = chars.next() {
             match ch {
                 '$' => {
-                    // Parameter expansion or command substitution $(...)
+                    // Parameter expansion, command substitution $(...), or arithmetic $((...))
                     match chars.peek() {
                         Some('{') => {
                             chars.next(); // consume {
@@ -110,9 +110,18 @@ impl<'a> Expander<'a> {
                         }
                         Some(&'(') => {
                             chars.next(); // consume (
-                            let cmd = Self::read_command_substitution(&mut chars, ')')?;
-                            let output = self.execute_command_substitution(&cmd)?;
-                            result.push_str(&output);
+                            // Check for arithmetic expansion $((...))
+                            if chars.peek() == Some(&'(') {
+                                chars.next(); // consume second (
+                                let expr = Self::read_arithmetic_expression(&mut chars)?;
+                                let value = self.evaluate_arithmetic(&expr)?;
+                                result.push_str(&value.to_string());
+                            } else {
+                                // Command substitution $(...)
+                                let cmd = Self::read_command_substitution_paren(&mut chars)?;
+                                let output = Self::execute_command_substitution(&cmd)?;
+                                result.push_str(&output);
+                            }
                         }
                         Some(&c) if c.is_alphabetic() || c == '_' => {
                             let name = Self::read_name(&mut chars);
@@ -141,7 +150,7 @@ impl<'a> Expander<'a> {
                 '`' => {
                     // Backtick command substitution
                     let cmd = Self::read_command_substitution(&mut chars, '`')?;
-                    let output = self.execute_command_substitution(&cmd)?;
+                    let output = Self::execute_command_substitution(&cmd)?;
                     result.push_str(&output);
                 }
                 _ => {
@@ -153,10 +162,44 @@ impl<'a> Expander<'a> {
         Ok(result)
     }
 
-    /// Read command substitution content until terminator (parentheses for $(...), backtick for `...`)
-    fn read_command_substitution(
+    /// Read arithmetic expression content until ))
+    fn read_arithmetic_expression(
         chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
-        terminator: char,
+    ) -> Result<String, ExpandError> {
+        let mut expr = String::new();
+        let mut depth = 1; // Track nesting for parentheses
+
+        while let Some(&ch) = chars.peek() {
+            chars.next();
+
+            if ch == '(' {
+                depth += 1;
+                expr.push(ch);
+            } else if ch == ')' {
+                depth -= 1;
+                if depth == 0 {
+                    // Check for second )
+                    if chars.peek() == Some(&')') {
+                        chars.next(); // consume second )
+                        return Ok(expr);
+                    }
+                    // Single ) in arithmetic context - keep looking
+                    depth = 1;
+                }
+                expr.push(ch);
+            } else {
+                expr.push(ch);
+            }
+        }
+
+        Err(ExpandError::ArithmeticError(
+            "unterminated arithmetic expression".to_string()
+        ))
+    }
+
+    /// Read command substitution content for $(...)
+    fn read_command_substitution_paren(
+        chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
     ) -> Result<String, ExpandError> {
         let mut cmd = String::new();
         let mut depth = 1; // Track nesting for parentheses
@@ -164,23 +207,15 @@ impl<'a> Expander<'a> {
         while let Some(&ch) = chars.peek() {
             chars.next();
 
-            if terminator == ')' {
-                // For $(...), handle nested parentheses
-                if ch == '(' {
-                    depth += 1;
-                    cmd.push(ch);
-                } else if ch == ')' {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Ok(cmd);
-                    }
-                    cmd.push(ch);
-                } else {
-                    cmd.push(ch);
+            if ch == '(' {
+                depth += 1;
+                cmd.push(ch);
+            } else if ch == ')' {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(cmd);
                 }
-            } else if ch == terminator {
-                // For backticks, just find matching backtick
-                return Ok(cmd);
+                cmd.push(ch);
             } else {
                 cmd.push(ch);
             }
@@ -191,8 +226,167 @@ impl<'a> Expander<'a> {
         ))
     }
 
+    /// Read command substitution content until terminator (backtick for `...`)
+    fn read_command_substitution(
+        chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+        terminator: char,
+    ) -> Result<String, ExpandError> {
+        let mut cmd = String::new();
+
+        while let Some(&ch) = chars.peek() {
+            chars.next();
+
+            if ch == terminator {
+                return Ok(cmd);
+            }
+            cmd.push(ch);
+        }
+
+        Err(ExpandError::CommandSubstitution(
+            "unterminated command substitution".to_string()
+        ))
+    }
+
+    /// Evaluate an arithmetic expression
+    fn evaluate_arithmetic(&self, expr: &str) -> Result<i64, ExpandError> {
+        // Simple recursive descent parser for arithmetic expressions
+        let mut chars = expr.chars().peekable();
+        self.parse_arithmetic_expr(&mut chars)
+    }
+
+    /// Parse arithmetic expression (handles +, -)
+    fn parse_arithmetic_expr(
+        &self,
+        chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    ) -> Result<i64, ExpandError> {
+        let mut left = self.parse_arithmetic_term(chars)?;
+
+        loop {
+            // Skip whitespace
+            while chars.peek() == Some(&' ') || chars.peek() == Some(&'\t') {
+                chars.next();
+            }
+
+            match chars.peek() {
+                Some(&op) if op == '+' || op == '-' => {
+                    chars.next();
+                    let right = self.parse_arithmetic_term(chars)?;
+                    left = if op == '+' { left + right } else { left - right };
+                }
+                _ => break,
+            }
+        }
+
+        Ok(left)
+    }
+
+    /// Parse arithmetic term (handles *, /, %)
+    fn parse_arithmetic_term(
+        &self,
+        chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    ) -> Result<i64, ExpandError> {
+        let mut left = self.parse_arithmetic_factor(chars)?;
+
+        loop {
+            // Skip whitespace
+            while chars.peek() == Some(&' ') || chars.peek() == Some(&'\t') {
+                chars.next();
+            }
+
+            match chars.peek() {
+                Some(&op) if op == '*' || op == '/' || op == '%' => {
+                    chars.next();
+                    let right = self.parse_arithmetic_factor(chars)?;
+                    left = match op {
+                        '*' => left * right,
+                        '/' => {
+                            if right == 0 {
+                                return Err(ExpandError::ArithmeticError("division by zero".to_string()));
+                            }
+                            left / right
+                        }
+                        '%' => {
+                            if right == 0 {
+                                return Err(ExpandError::ArithmeticError("modulo by zero".to_string()));
+                            }
+                            left % right
+                        }
+                        _ => unreachable!(),
+                    };
+                }
+                _ => break,
+            }
+        }
+
+        Ok(left)
+    }
+
+    /// Parse arithmetic factor (handles numbers, variables, parentheses, unary +/-)
+    fn parse_arithmetic_factor(
+        &self,
+        chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    ) -> Result<i64, ExpandError> {
+        // Skip whitespace
+        while chars.peek() == Some(&' ') || chars.peek() == Some(&'\t') {
+            chars.next();
+        }
+
+        match chars.peek() {
+            Some(&'(') => {
+                chars.next(); // consume (
+                let value = self.parse_arithmetic_expr(chars)?;
+                // Expect )
+                if chars.peek() == Some(&')') {
+                    chars.next();
+                }
+                Ok(value)
+            }
+            Some(&'+') => {
+                chars.next(); // unary plus
+                self.parse_arithmetic_factor(chars)
+            }
+            Some(&'-') => {
+                chars.next(); // unary minus
+                let value = self.parse_arithmetic_factor(chars)?;
+                Ok(-value)
+            }
+            Some(&c) if c.is_ascii_digit() => {
+                let mut num = 0i64;
+                while let Some(&ch) = chars.peek() {
+                    if ch.is_ascii_digit() {
+                        chars.next();
+                        num = num * 10 + (ch as i64 - '0' as i64);
+                    } else {
+                        break;
+                    }
+                }
+                Ok(num)
+            }
+            Some(&c) if c.is_alphabetic() || c == '_' => {
+                // Variable reference in arithmetic context
+                let mut name = String::new();
+                while let Some(&ch) = chars.peek() {
+                    if ch.is_alphanumeric() || ch == '_' {
+                        chars.next();
+                        name.push(ch);
+                    } else {
+                        break;
+                    }
+                }
+                // Look up variable and parse as number
+                let value_str = self.env.get(&name).unwrap_or("0");
+                value_str
+                    .parse::<i64>()
+                    .map_err(|_| ExpandError::ArithmeticError(format!("invalid number: {value_str}")))
+            }
+            _ => Err(ExpandError::ArithmeticError(
+                "unexpected character in arithmetic expression".to_string()
+            )),
+        }
+    }
+
     /// Execute a command substitution and return its output
-    fn execute_command_substitution(&self, cmd: &str) -> Result<String, ExpandError> {
+    fn execute_command_substitution(cmd: &str) -> Result<String, ExpandError> {
         // For now, use a simple approach with std::process::Command
         // This runs the command through the system shell
         // TODO: In the future, integrate with our own parser/executor for proper execution
@@ -425,6 +619,54 @@ mod tests {
         // Command substitution embedded in a word
         let result = expander.expand("prefix-$(echo middle)-suffix").unwrap();
         assert_eq!(result, vec!["prefix-middle-suffix"]);
+    }
+
+    #[test]
+    fn test_expand_arithmetic_simple() {
+        let mut env = Environment::new();
+        let mut expander = Expander::new(&mut env);
+        
+        // Basic arithmetic
+        assert_eq!(expander.expand("$((1 + 2))").unwrap(), vec!["3"]);
+        assert_eq!(expander.expand("$((10 - 3))").unwrap(), vec!["7"]);
+        assert_eq!(expander.expand("$((4 * 5))").unwrap(), vec!["20"]);
+        assert_eq!(expander.expand("$((20 / 4))").unwrap(), vec!["5"]);
+        assert_eq!(expander.expand("$((17 % 5))").unwrap(), vec!["2"]);
+    }
+
+    #[test]
+    fn test_expand_arithmetic_complex() {
+        let mut env = Environment::new();
+        let mut expander = Expander::new(&mut env);
+        
+        // Complex expressions with parentheses
+        assert_eq!(expander.expand("$((2 + 3 * 4))").unwrap(), vec!["14"]); // Precedence
+        assert_eq!(expander.expand("$(((2 + 3) * 4))").unwrap(), vec!["20"]); // Parentheses
+        assert_eq!(expander.expand("$((-5 + 3))").unwrap(), vec!["-2"]); // Unary minus
+        assert_eq!(expander.expand("$((+7))").unwrap(), vec!["7"]); // Unary plus
+    }
+
+    #[test]
+    fn test_expand_arithmetic_with_variable() {
+        let mut env = Environment::new();
+        env.set("X".to_string(), "10".to_string());
+        env.set("Y".to_string(), "3".to_string());
+        
+        let mut expander = Expander::new(&mut env);
+        
+        // Variables in arithmetic
+        assert_eq!(expander.expand("$((X + Y))").unwrap(), vec!["13"]);
+        assert_eq!(expander.expand("$((X * 2))").unwrap(), vec!["20"]);
+    }
+
+    #[test]
+    fn test_expand_arithmetic_in_word() {
+        let mut env = Environment::new();
+        let mut expander = Expander::new(&mut env);
+        
+        // Arithmetic embedded in a word
+        let result = expander.expand("count_$((5 + 1))_items").unwrap();
+        assert_eq!(result, vec!["count_6_items"]);
     }
 
     #[test]
