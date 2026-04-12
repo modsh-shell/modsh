@@ -1,6 +1,7 @@
 [workspace]
 members = ["modsh-core", "modsh-interactive", "modsh-ai", "modsh-cli"]
 resolver = "2"
+exclude = ["modsh-core/fuzz"]
 
 [workspace.package]
 version = "0.0.1"
