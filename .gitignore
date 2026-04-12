@@ -45,3 +45,5 @@ context.db
 *.key
 *.p12
 .skill/
+.cursor/rules/skill-context.md
+.windsurf/rules/skill-context.md
