@@ -117,7 +117,70 @@ impl Executor {
                 self.execute(cmd)
             }
             Command::Group(cmd) => self.execute(cmd),
+            Command::If(if_clause) => self.execute_if(if_clause),
+            Command::For(for_loop) => self.execute_for(for_loop),
+            Command::While(while_loop) => self.execute_while(while_loop),
+            Command::Case(case_stmt) => self.execute_case(case_stmt),
         }
+    }
+
+    fn execute_if(&mut self, if_clause: &crate::parser::IfClause) -> Result<ExitStatus, ExecError> {
+        let cond_status = self.execute(&if_clause.condition)?;
+        if cond_status.success() {
+            self.execute(&if_clause.then_branch)
+        } else {
+            for (elif_cond, elif_then) in &if_clause.elif_branches {
+                let elif_status = self.execute(elif_cond)?;
+                if elif_status.success() {
+                    return self.execute(elif_then);
+                }
+            }
+            if let Some(else_branch) = &if_clause.else_branch {
+                self.execute(else_branch)
+            } else {
+                Ok(ExitStatus::SUCCESS) // No else, no match
+            }
+        }
+    }
+
+    fn execute_for(&mut self, for_loop: &crate::parser::ForLoop) -> Result<ExitStatus, ExecError> {
+        let words = if for_loop.words.is_empty() {
+            // TODO: Get positional parameters "$@"
+            vec![]
+        } else {
+            for_loop.words.clone()
+        };
+
+        let mut last_status = ExitStatus::SUCCESS;
+        for word in words {
+            // TODO: Set loop variable in environment
+            let _ = word;
+            last_status = self.execute(&for_loop.body)?;
+        }
+        Ok(last_status)
+    }
+
+    fn execute_while(&mut self, while_loop: &crate::parser::WhileLoop) -> Result<ExitStatus, ExecError> {
+        let mut last_status = ExitStatus::SUCCESS;
+        loop {
+            let cond_status = self.execute(&while_loop.condition)?;
+            if !cond_status.success() {
+                break;
+            }
+            last_status = self.execute(&while_loop.body)?;
+        }
+        Ok(last_status)
+    }
+
+    fn execute_case(&mut self, case_stmt: &crate::parser::CaseStatement) -> Result<ExitStatus, ExecError> {
+        // TODO: Pattern matching against case_stmt.word
+        let mut last_status = ExitStatus::SUCCESS;
+        for (_patterns, body) in &case_stmt.clauses {
+            // TODO: Check if word matches any pattern
+            last_status = self.execute(body)?;
+            // TODO: Break after first match (or continue for ;&)
+        }
+        Ok(last_status)
     }
 
     fn execute_simple(&mut self, cmd: &SimpleCommand) -> Result<ExitStatus, ExecError> {

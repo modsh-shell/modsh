@@ -41,6 +41,56 @@ pub enum Command {
     Subshell(Box<Command>),
     /// Group: { commands; }
     Group(Box<Command>),
+    /// If statement: if cmd; then cmds; elif cmd; then cmds; else cmds; fi
+    If(IfClause),
+    /// For loop: for var in words; do cmds; done
+    For(ForLoop),
+    /// While loop: while cmd; do cmds; done
+    While(WhileLoop),
+    /// Case statement: case word in patterns) cmds;; esac
+    Case(CaseStatement),
+}
+
+/// If clause with optional elif/else
+#[derive(Debug, Clone, PartialEq)]
+pub struct IfClause {
+    /// Condition command
+    pub condition: Box<Command>,
+    /// Commands to execute if condition succeeds
+    pub then_branch: Box<Command>,
+    /// Optional elif clauses
+    pub elif_branches: Vec<(Box<Command>, Box<Command>)>,
+    /// Optional else branch
+    pub else_branch: Option<Box<Command>>,
+}
+
+/// For loop
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForLoop {
+    /// Loop variable name
+    pub var: String,
+    /// Words to iterate over (empty means "$@")
+    pub words: Vec<String>,
+    /// Body commands
+    pub body: Box<Command>,
+}
+
+/// While loop
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhileLoop {
+    /// Condition command
+    pub condition: Box<Command>,
+    /// Body commands
+    pub body: Box<Command>,
+}
+
+/// Case statement
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaseStatement {
+    /// Word to match
+    pub word: String,
+    /// Case clauses (pattern, commands)
+    pub clauses: Vec<(Vec<String>, Box<Command>)>,
 }
 
 /// A simple command with words and redirects
@@ -124,22 +174,59 @@ impl Parser {
     }
 
     fn parse_list(&mut self) -> Result<Command, ParseError> {
-        let left = self.parse_and_or()?;
+        self.parse_list_until(&[])
+    }
+
+    /// Check if current token is a terminator word
+    fn is_terminator_word(&self, terminators: &[&str]) -> bool {
+        matches!(self.peek(), Token::Word(w) if terminators.contains(&w.as_str()))
+    }
+
+    /// Check if current token is a terminator operator (RBrace, RParen, Semicolon)
+    fn is_terminator_op(&self, terminators: &[&str]) -> bool {
+        match self.peek() {
+            Token::Operator(Operator::RBrace) if terminators.contains(&"}") => true,
+            Token::Operator(Operator::RParen) if terminators.contains(&")") => true,
+            Token::Operator(Operator::Semicolon) if terminators.contains(&";") => true,
+            _ => false,
+        }
+    }
+
+    /// Parse a list stopping when we hit a terminator word or operator
+    fn parse_list_until(&mut self, terminators: &[&str]) -> Result<Command, ParseError> {
+        // Check for terminator at start
+        if self.is_terminator_word(terminators) || self.is_terminator_op(terminators) {
+            return Err(ParseError::Unexpected(self.peek().clone()));
+        }
+
+        let left = self.parse_and_or_until(terminators)?;
 
         match self.peek() {
+            // Stop if we hit a terminator word or operator
+            Token::Word(w) if terminators.contains(&w.as_str()) => Ok(left),
+            Token::Operator(Operator::RBrace) if terminators.contains(&"}") => Ok(left),
+            Token::Operator(Operator::RParen) if terminators.contains(&")") => Ok(left),
+            Token::Operator(Operator::Semicolon) if terminators.contains(&";") => Ok(left),
             Token::Operator(Operator::Semicolon) => {
                 self.advance();
-                let right = self.parse_list()?;
+                // After semicolon, check if next token is a terminator
+                if self.is_terminator_word(terminators) || self.is_terminator_op(terminators) {
+                    return Ok(left);
+                }
+                let right = self.parse_list_until(terminators)?;
                 Ok(Command::List(Box::new(left), Box::new(right)))
             }
             Token::Operator(Operator::Background) => {
                 self.advance();
-                // Background binds tighter than ; but check for more list after &
                 let bg_cmd = Command::Background(Box::new(left));
+                // After &, check if next token is a terminator
+                if self.is_terminator_word(terminators) || self.is_terminator_op(terminators) {
+                    return Ok(bg_cmd);
+                }
                 match self.peek() {
                     Token::Operator(Operator::Semicolon) => {
                         self.advance();
-                        let right = self.parse_list()?;
+                        let right = self.parse_list_until(terminators)?;
                         Ok(Command::List(Box::new(bg_cmd), Box::new(right)))
                     }
                     _ => Ok(bg_cmd),
@@ -151,18 +238,24 @@ impl Parser {
 
     /// Parse AND/OR lists with left-associativity
     fn parse_and_or(&mut self) -> Result<Command, ParseError> {
-        let mut left = self.parse_pipeline()?;
+        self.parse_and_or_until(&[])
+    }
+
+    fn parse_and_or_until(&mut self, terminators: &[&str]) -> Result<Command, ParseError> {
+        let mut left = self.parse_pipeline_until(terminators)?;
 
         loop {
             match self.peek() {
+                // Stop at terminator words
+                Token::Word(w) if terminators.contains(&w.as_str()) => break,
                 Token::Operator(Operator::And) => {
                     self.advance();
-                    let right = self.parse_pipeline()?;
+                    let right = self.parse_pipeline_until(terminators)?;
                     left = Command::And(Box::new(left), Box::new(right));
                 }
                 Token::Operator(Operator::Or) => {
                     self.advance();
-                    let right = self.parse_pipeline()?;
+                    let right = self.parse_pipeline_until(terminators)?;
                     left = Command::Or(Box::new(left), Box::new(right));
                 }
                 _ => break,
@@ -173,11 +266,15 @@ impl Parser {
     }
 
     fn parse_pipeline(&mut self) -> Result<Command, ParseError> {
-        let mut commands = vec![self.parse_command()?];
+        self.parse_pipeline_until(&[])
+    }
+
+    fn parse_pipeline_until(&mut self, terminators: &[&str]) -> Result<Command, ParseError> {
+        let mut commands = vec![self.parse_command_until(terminators)?];
 
         while matches!(self.peek(), Token::Operator(Operator::Pipe)) {
             self.advance();
-            commands.push(self.parse_command()?);
+            commands.push(self.parse_command_until(terminators)?);
         }
 
         if commands.len() == 1 {
@@ -188,20 +285,276 @@ impl Parser {
     }
 
     fn parse_command(&mut self) -> Result<Command, ParseError> {
+        self.parse_command_until(&[])
+    }
+
+    fn parse_command_until(&mut self, terminators: &[&str]) -> Result<Command, ParseError> {
+        // Check for terminator words first
+        if let Token::Word(w) = self.peek() {
+            if terminators.contains(&w.as_str()) {
+                return Err(ParseError::Unexpected(self.peek().clone()));
+            }
+        }
+
         match self.peek() {
             Token::Operator(Operator::LParen) => {
                 self.advance();
-                let cmd = self.parse_list()?;
+                // Create new terminators list with ")" added
+                let mut paren_terminators = terminators.to_vec();
+                paren_terminators.push(")");
+                let cmd = self.parse_list_until(&paren_terminators)?;
                 self.expect_operator(Operator::RParen)?;
                 Ok(Command::Subshell(Box::new(cmd)))
             }
             Token::Operator(Operator::LBrace) => {
                 self.advance();
-                let cmd = self.parse_list()?;
+                // Create new terminators list with "}" added
+                let mut brace_terminators = terminators.to_vec();
+                brace_terminators.push("}");
+                let cmd = self.parse_list_until(&brace_terminators)?;
                 self.expect_operator(Operator::RBrace)?;
                 Ok(Command::Group(Box::new(cmd)))
             }
+            Token::Word(w) => {
+                // Check for compound command keywords (they take priority over terminators)
+                match w.as_str() {
+                    "if" => self.parse_if(),
+                    "for" => self.parse_for(),
+                    "while" => self.parse_while(),
+                    "case" => self.parse_case(),
+                    _ => {
+                        if terminators.contains(&w.as_str()) {
+                            Err(ParseError::Unexpected(self.peek().clone()))
+                        } else {
+                            self.parse_simple_command()
+                        }
+                    }
+                }
+            }
             _ => self.parse_simple_command(),
+        }
+    }
+
+    /// Parse if statement: if cmd; then cmds; [elif cmd; then cmds;]... [else cmds;] fi
+    fn parse_if(&mut self) -> Result<Command, ParseError> {
+        self.expect_word("if")?;
+        let condition = Box::new(self.parse_list_until(&["then"])?);
+        self.expect_word("then")?;
+        let then_branch = Box::new(self.parse_list_until(&["elif", "else", "fi"])?);
+
+        let mut elif_branches = Vec::new();
+        let else_branch = loop {
+            match self.peek() {
+                Token::Word(w) if w == "elif" => {
+                    self.advance();
+                    let elif_cond = Box::new(self.parse_list_until(&["then"])?);
+                    self.expect_word("then")?;
+                    let elif_then = Box::new(self.parse_list_until(&["elif", "else", "fi"])?);
+                    elif_branches.push((elif_cond, elif_then));
+                }
+                Token::Word(w) if w == "else" => {
+                    self.advance();
+                    let else_cmd = Box::new(self.parse_list_until(&["fi"])?);
+                    self.expect_word("fi")?;
+                    break Some(else_cmd);
+                }
+                Token::Word(w) if w == "fi" => {
+                    self.advance();
+                    break None;
+                }
+                _ => {
+                    return Err(ParseError::Expected {
+                        expected: "elif, else, or fi".to_string(),
+                        got: self.peek().clone(),
+                    });
+                }
+            }
+        };
+
+        Ok(Command::If(IfClause {
+            condition,
+            then_branch,
+            elif_branches,
+            else_branch,
+        }))
+    }
+
+    /// Parse for loop: for var in words; do cmds; done
+    fn parse_for(&mut self) -> Result<Command, ParseError> {
+        self.expect_word("for")?;
+        let var = self.expect_word_value()?;
+
+        let words = if matches!(self.peek(), Token::Word(w) if w == "in") {
+            self.advance();
+            self.parse_for_words()?
+        } else {
+            Vec::new() // Empty means iterate over "$@"
+        };
+
+        self.expect_word("do")?;
+        let body = Box::new(self.parse_list_until(&["done"])?);
+        self.expect_word("done")?;
+
+        Ok(Command::For(ForLoop { var, words, body }))
+    }
+
+    /// Parse words until semicolon or newline (for for-loop)
+    fn parse_for_words(&mut self) -> Result<Vec<String>, ParseError> {
+        let mut words = Vec::new();
+        loop {
+            match self.peek() {
+                Token::Word(w) if w == "do" || w == ";" => break,
+                Token::Operator(Operator::Semicolon) => {
+                    self.advance();
+                    break;
+                }
+                Token::Word(w) => {
+                    words.push(w.clone());
+                    self.advance();
+                }
+                _ => break,
+            }
+        }
+        Ok(words)
+    }
+
+    /// Parse while loop: while cmd; do cmds; done
+    fn parse_while(&mut self) -> Result<Command, ParseError> {
+        self.expect_word("while")?;
+        let condition = Box::new(self.parse_list_until(&["do"])?);
+        self.expect_word("do")?;
+        let body = Box::new(self.parse_list_until(&["done"])?);
+        self.expect_word("done")?;
+
+        Ok(Command::While(WhileLoop { condition, body }))
+    }
+
+    /// Parse case statement: case word in patterns) cmds;; esac
+    fn parse_case(&mut self) -> Result<Command, ParseError> {
+        self.expect_word("case")?;
+        let word = self.expect_word_value()?;
+        self.expect_word("in")?;
+
+        let mut clauses = Vec::new();
+        loop {
+            match self.peek() {
+                Token::Word(w) if w == "esac" => {
+                    self.advance();
+                    break;
+                }
+                _ => {
+                    let patterns = self.parse_case_patterns()?;
+                    // Parse body until we hit ;; (represented as ; in terminators, we check for double)
+                    let body = Box::new(self.parse_list_until(&[";", "esac"])?);
+                    // Expect the second ; of ;; or handle single ; before esac
+                    self.expect_case_terminator_or_semicolon()?;
+                    clauses.push((patterns, body));
+                }
+            }
+        }
+
+        Ok(Command::Case(CaseStatement { word, clauses }))
+    }
+
+    /// Expect case clause terminator (;; or just ; before esac)
+    fn expect_case_terminator_or_semicolon(&mut self) -> Result<(), ParseError> {
+        match self.peek() {
+            Token::Operator(Operator::Semicolon) => {
+                self.advance();
+                // Check for second ; (;; terminator)
+                if matches!(self.peek(), Token::Operator(Operator::Semicolon)) {
+                    self.advance();
+                }
+                Ok(())
+            }
+            Token::Word(w) if w == "esac" => {
+                // Allow missing ;; before esac (optional in some shells)
+                Ok(())
+            }
+            _ => Err(ParseError::Expected {
+                expected: ";; or esac".to_string(),
+                got: self.peek().clone(),
+            }),
+        }
+    }
+
+    /// Parse case patterns (pattern1 | pattern2)
+    fn parse_case_patterns(&mut self) -> Result<Vec<String>, ParseError> {
+        let mut patterns = Vec::new();
+        loop {
+            if let Token::Word(w) = self.peek() {
+                patterns.push(w.clone());
+                self.advance();
+                match self.peek() {
+                    Token::Operator(Operator::Pipe) => {
+                        self.advance();
+                        continue;
+                    }
+                    Token::Operator(Operator::RParen) => {
+                        self.advance();
+                        break;
+                    }
+                    _ => {
+                        return Err(ParseError::Expected {
+                            expected: "| or )".to_string(),
+                            got: self.peek().clone(),
+                        });
+                    }
+                }
+            } else {
+                return Err(ParseError::Expected {
+                    expected: "pattern word".to_string(),
+                    got: self.peek().clone(),
+                });
+            }
+        }
+        Ok(patterns)
+    }
+
+    /// Expect a specific word keyword
+    fn expect_word(&mut self, expected: &str) -> Result<(), ParseError> {
+        match self.peek() {
+            Token::Word(w) if w == expected => {
+                self.advance();
+                Ok(())
+            }
+            token => Err(ParseError::Expected {
+                expected: format!("'{expected}'"),
+                got: token.clone(),
+            }),
+        }
+    }
+
+    /// Expect a word and return its value
+    fn expect_word_value(&mut self) -> Result<String, ParseError> {
+        match self.peek() {
+            Token::Word(w) => {
+                let val = w.clone();
+                self.advance();
+                Ok(val)
+            }
+            token => Err(ParseError::Expected {
+                expected: "word".to_string(),
+                got: token.clone(),
+            }),
+        }
+    }
+
+    /// Expect case clause terminator (;; or ;& or ;;&)
+    fn expect_case_terminator(&mut self) -> Result<(), ParseError> {
+        match self.peek() {
+            Token::Operator(Operator::Semicolon) => {
+                self.advance();
+                // Check for second ;
+                if matches!(self.peek(), Token::Operator(Operator::Semicolon)) {
+                    self.advance();
+                }
+                Ok(())
+            }
+            _ => Err(ParseError::Expected {
+                expected: ";;".to_string(),
+                got: self.peek().clone(),
+            }),
         }
     }
 
@@ -338,6 +691,92 @@ mod tests {
                 assert_eq!(commands.len(), 2);
             }
             _ => panic!("Expected pipeline"),
+        }
+    }
+
+    #[test]
+    fn test_if_statement() {
+        let cmd = parse("if true; then echo yes; fi").unwrap();
+        match cmd {
+            Command::If(if_clause) => {
+                // Condition should be 'true'
+                assert!(matches!(*if_clause.then_branch, Command::Simple(ref s) if s.words == vec!["echo", "yes"]));
+                assert!(if_clause.elif_branches.is_empty());
+                assert!(if_clause.else_branch.is_none());
+            }
+            _ => panic!("Expected if command, got {:?}", cmd),
+        }
+    }
+
+    #[test]
+    fn test_if_else_statement() {
+        let cmd = parse("if false; then echo yes; else echo no; fi").unwrap();
+        match cmd {
+            Command::If(if_clause) => {
+                assert!(if_clause.else_branch.is_some());
+            }
+            _ => panic!("Expected if command"),
+        }
+    }
+
+    #[test]
+    fn test_for_loop() {
+        let cmd = parse("for i in a b c; do echo $i; done").unwrap();
+        match cmd {
+            Command::For(for_loop) => {
+                assert_eq!(for_loop.var, "i");
+                assert_eq!(for_loop.words, vec!["a", "b", "c"]);
+            }
+            _ => panic!("Expected for command"),
+        }
+    }
+
+    #[test]
+    fn test_while_loop() {
+        let cmd = parse("while true; do echo loop; done").unwrap();
+        match cmd {
+            Command::While(while_loop) => {
+                // Condition should be 'true', body should be 'echo loop'
+                assert!(matches!(*while_loop.body, Command::Simple(ref s) if s.words == vec!["echo", "loop"]));
+            }
+            _ => panic!("Expected while command"),
+        }
+    }
+
+    #[test]
+    fn test_case_statement() {
+        let cmd = parse("case x in a) echo A;; b) echo B;; esac").unwrap();
+        match cmd {
+            Command::Case(case_stmt) => {
+                assert_eq!(case_stmt.word, "x");
+                assert_eq!(case_stmt.clauses.len(), 2);
+                assert_eq!(case_stmt.clauses[0].0, vec!["a"]);
+                assert_eq!(case_stmt.clauses[1].0, vec!["b"]);
+            }
+            _ => panic!("Expected case command"),
+        }
+    }
+
+    #[test]
+    fn test_subshell() {
+        let cmd = parse("(echo hello)").unwrap();
+        match cmd {
+            Command::Subshell(inner) => {
+                assert!(matches!(*inner, Command::Simple(ref s) if s.words == vec!["echo", "hello"]));
+            }
+            _ => panic!("Expected subshell"),
+        }
+    }
+
+    #[test]
+    fn test_group() {
+        let cmd = parse("{ echo a; echo b; }").unwrap();
+        match cmd {
+            Command::Group(inner) => {
+                // Group contains a list of commands
+                assert!(matches!(*inner, Command::List(..)));
+            }
+            _ => panic!("Expected group"),
         }
     }
 }
