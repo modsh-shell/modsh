@@ -1,0 +1,34 @@
+# Pre-commit hooks for modsh
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: Cargo fmt
+        entry: cargo fmt -- --check
+        language: system
+        pass_filenames: false
+        files: \.rs$
+
+      - id: cargo-clippy
+        name: Cargo clippy
+        entry: cargo clippy --workspace -- -D warnings
+        language: system
+        pass_filenames: false
+        files: \.rs$
+
+      - id: cargo-check
+        name: Cargo check
+        entry: cargo check --workspace
+        language: system
+        pass_filenames: false
+        files: \.rs$
+
+      - id: cargo-test
+        name: Cargo test
+        entry: cargo test --workspace
+        language: system
+        pass_filenames: false
+        files: \.rs$

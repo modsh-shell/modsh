@@ -27,12 +27,12 @@
   - [x] Add PR template (`.github/pull_request_template.md`)
   - [x] Add issue templates (bug, feature)
 
-- [ ] **Dev tooling**
-  - [ ] `cargo install cargo-audit`
-  - [ ] `cargo install cargo-watch`
-  - [ ] `cargo install cargo-nextest`
-  - [ ] `cargo install cargo-skill`
-  - [ ] Add `pre-commit` config (fmt, clippy, audit)
+- [x] **Dev tooling**
+  - [x] `cargo install cargo-audit`
+  - [x] `cargo install cargo-watch`
+  - [x] `cargo install cargo-nextest`
+  - [x] `cargo install cargo-skill`
+  - [x] Add `pre-commit` config (fmt, clippy, audit)
 
 ---
 
