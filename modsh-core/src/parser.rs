@@ -196,8 +196,8 @@ impl Parser {
             LRedirect::Input { fd } => (fd, RedirectKind::Input, String::new()),
             LRedirect::Output { fd } => (fd, RedirectKind::Output, String::new()),
             LRedirect::Append { fd } => (fd, RedirectKind::Append, String::new()),
-            LRedirect::Heredoc { delimiter } => (None, RedirectKind::Heredoc, delimiter),
-            LRedirect::Herestring => (None, RedirectKind::Herestring, String::new()),
+            LRedirect::Heredoc { delimiter, quoted: _ } => (None, RedirectKind::Heredoc, delimiter),
+            LRedirect::Herestring { word } => (None, RedirectKind::Herestring, word),
             LRedirect::ReadWrite { fd } => (fd, RedirectKind::ReadWrite, String::new()),
         };
 

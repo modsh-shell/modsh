@@ -78,9 +78,14 @@ pub enum Redirect {
     Heredoc {
         /// Heredoc delimiter string
         delimiter: String,
+        /// Whether delimiter was quoted (suppresses expansion in body)
+        quoted: bool,
     },
     /// Here-string: <<<
-    Herestring,
+    Herestring {
+        /// Content word for the here-string
+        word: String,
+    },
     /// Input/Output redirection: <>
     ReadWrite {
         /// File descriptor
@@ -163,6 +168,19 @@ impl<'a> Lexer<'a> {
                 self.advance();
                 Ok(Token::Operator(Operator::Bang))
             }
+            // Check for FD-prefixed redirections like 2>, 2>>, 2>&1
+            '0'..='9' => {
+                let fd_start = self.pos;
+                while !self.is_at_end() && self.peek().is_ascii_digit() {
+                    self.advance();
+                }
+                let fd = self.input[fd_start..self.pos].parse::<u32>().ok();
+                // Check if followed by redirection operator
+                match self.peek() {
+                    '<' | '>' => self.read_redirect_with_fd(fd),
+                    _ => Ok(Token::Word(self.input[fd_start..self.pos].to_string())),
+                }
+            }
             '<' | '>' => self.read_redirect(),
             '\'' | '"' => self.read_quoted_word(),
             _ => self.read_word(),
@@ -193,10 +211,17 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     if self.peek() == '<' {
                         self.advance();
-                        Ok(Token::Redirect(Redirect::Herestring))
+                        // Read the word after <<< for here-string content
+                        self.skip_whitespace();
+                        let word = if self.is_at_end() {
+                            String::new()
+                        } else {
+                            self.read_word_content()?
+                        };
+                        Ok(Token::Redirect(Redirect::Herestring { word }))
                     } else {
-                        let delimiter = self.read_delimiter();
-                        Ok(Token::Redirect(Redirect::Heredoc { delimiter }))
+                        let (delimiter, quoted) = self.read_delimiter()?;
+                        Ok(Token::Redirect(Redirect::Heredoc { delimiter, quoted }))
                     }
                 } else if self.peek() == '>' {
                     self.advance();
@@ -217,13 +242,74 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn read_delimiter(&mut self) -> String {
+    /// Read a redirection with an optional file descriptor (e.g., 2>, 2>>, 2>&1)
+    fn read_redirect_with_fd(&mut self, fd: Option<u32>) -> Result<Token, LexError> {
+        let ch = self.peek();
+        self.advance();
+
+        match ch {
+            '<' => {
+                if self.peek() == '<' {
+                    self.advance();
+                    if self.peek() == '<' {
+                        self.advance();
+                        self.skip_whitespace();
+                        let word = if self.is_at_end() {
+                            String::new()
+                        } else {
+                            self.read_word_content()?
+                        };
+                        Ok(Token::Redirect(Redirect::Herestring { word }))
+                    } else {
+                        let (delimiter, quoted) = self.read_delimiter()?;
+                        Ok(Token::Redirect(Redirect::Heredoc { delimiter, quoted }))
+                    }
+                } else if self.peek() == '>' {
+                    self.advance();
+                    Ok(Token::Redirect(Redirect::ReadWrite { fd }))
+                } else {
+                    Ok(Token::Redirect(Redirect::Input { fd }))
+                }
+            }
+            '>' => {
+                if self.peek() == '>' {
+                    self.advance();
+                    Ok(Token::Redirect(Redirect::Append { fd }))
+                } else {
+                    Ok(Token::Redirect(Redirect::Output { fd }))
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn read_delimiter(&mut self) -> Result<(String, bool), LexError> {
         self.skip_whitespace();
+        if self.is_at_end() {
+            return Err(LexError::UnterminatedHeredoc);
+        }
+
+        let ch = self.peek();
+        let quoted = ch == '\'' || ch == '"';
+
         let start = self.pos;
+        if quoted {
+            self.advance(); // skip opening quote
+            while !self.is_at_end() && self.peek() != ch {
+                self.advance();
+            }
+            if self.is_at_end() {
+                return Err(LexError::UnterminatedQuote);
+            }
+            let content = self.input[start + 1..self.pos].to_string();
+            self.advance(); // skip closing quote
+            return Ok((content, quoted));
+        }
+
         while !self.is_at_end() && !self.peek().is_ascii_whitespace() {
             self.advance();
         }
-        self.input[start..self.pos].to_string()
+        Ok((self.input[start..self.pos].to_string(), false))
     }
 
     fn read_quoted_word(&mut self) -> Result<Token, LexError> {
@@ -252,7 +338,8 @@ impl<'a> Lexer<'a> {
         Ok(Token::Word(word))
     }
 
-    fn read_word(&mut self) -> Result<Token, LexError> {
+    /// Read word content as a string (used by both `read_word` and here-string)
+    fn read_word_content(&mut self) -> Result<String, LexError> {
         let start = self.pos;
 
         while !self.is_at_end() {
@@ -260,9 +347,16 @@ impl<'a> Lexer<'a> {
             if ch.is_ascii_whitespace()
                 || matches!(
                     ch,
-                    '|' | '&' | ';' | '(' | ')' | '<' | '>' | '{' | '}' | '#'
+                    '|' | '&' | ';' | '(' | ')' | '<' | '>' | '{' | '}'
                 )
             {
+                break;
+            }
+
+            // # only starts a comment at word boundary (preceded by whitespace)
+            // Inside a word, # is just a regular character
+            if ch == '#' && start == self.pos {
+                // At start of word, # is a comment - but caller handles this
                 break;
             }
 
@@ -278,9 +372,10 @@ impl<'a> Lexer<'a> {
                 while !self.is_at_end() && self.peek() != quote {
                     self.advance();
                 }
-                if !self.is_at_end() {
-                    self.advance(); // closing quote
+                if self.is_at_end() {
+                    return Err(LexError::UnterminatedQuote);
                 }
+                self.advance(); // closing quote
             } else {
                 self.advance();
             }
@@ -290,7 +385,12 @@ impl<'a> Lexer<'a> {
             return Err(LexError::Unexpected(self.peek()));
         }
 
-        Ok(Token::Word(self.input[start..self.pos].to_string()))
+        Ok(self.input[start..self.pos].to_string())
+    }
+
+    fn read_word(&mut self) -> Result<Token, LexError> {
+        let content = self.read_word_content()?;
+        Ok(Token::Word(content))
     }
 
     fn peek(&self) -> char {
