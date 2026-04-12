@@ -48,15 +48,15 @@
 - [ ] Fuzz testing — malformed input safety
 
 ### 1.2 Parser
-- [ ] Define AST node types
-  - [ ] SimpleCommand
-  - [ ] Pipeline
-  - [ ] List (AND/OR)
-  - [ ] CompoundCommand (if/for/while/case/subshell)
+- [~] Define AST node types
+  - [x] SimpleCommand
+  - [x] Pipeline
+  - [x] List (AND/OR)
+  - [~] CompoundCommand — Subshell/Group done, if/for/while/case TODO
   - [ ] FunctionDefinition
-- [ ] Implement recursive descent parser
+- [x] Implement recursive descent parser
 - [ ] Error recovery — parse partial input gracefully
-- [ ] Unit tests — AST correctness per POSIX grammar
+- [~] Unit tests — basic tests done, need comprehensive POSIX grammar tests
 
 ### 1.3 Expander
 - [ ] Parameter expansion (`$VAR`, `${VAR:-default}`, etc.)
