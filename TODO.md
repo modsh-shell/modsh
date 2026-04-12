@@ -42,7 +42,7 @@
 - [x] Define token types (Word, Operator, Redirect, etc.)
 - [x] Implement tokenizer for POSIX sh syntax
 - [x] Handle quoting (`'`, `"`, `\`)
-- [~] Handle heredoc tokens — delimiter parsed, body reading TODO
+- [x] Handle heredoc tokens — delimiter and body reading done
 - [x] Handle comment stripping
 - [~] Unit tests — token stream correctness — basic tests done, need more edge cases
 - [ ] Fuzz testing — malformed input safety
