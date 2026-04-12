@@ -60,7 +60,7 @@
   - [x] CompoundCommand — if/for/while/case/subshell/group all done
   - [x] FunctionDefinition — POSIX (name() { }) and bash (function name { }) forms
 - [x] Implement recursive descent parser
-- [ ] Error recovery — parse partial input gracefully
+- [x] Error recovery — parse_partial() with is_incomplete detection, 14 tests
 - [~] Unit tests — basic tests done, need comprehensive POSIX grammar tests
 
 ### 1.3 Expander
