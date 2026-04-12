@@ -59,13 +59,13 @@
 - [~] Unit tests — basic tests done, need comprehensive POSIX grammar tests
 
 ### 1.3 Expander
-- [ ] Parameter expansion (`$VAR`, `${VAR:-default}`, etc.)
+- [~] Parameter expansion (`$VAR`, `${VAR:-default}`, etc.) — basic done, ${VAR:=...} TODO
 - [ ] Command substitution (`$(cmd)`, backticks)
 - [ ] Arithmetic expansion (`$((expr))`)
-- [ ] Word splitting
+- [ ] Word splitting — returns Vec but no splitting yet
 - [ ] Glob/pathname expansion
-- [ ] Tilde expansion
-- [ ] Unit tests — expansion edge cases
+- [~] Tilde expansion — ~/ done, ~user/ TODO
+- [~] Unit tests — basic tests done, need edge cases
 
 ### 1.4 Executor
 - [ ] Fork/exec pipeline
