@@ -78,12 +78,14 @@
 - [ ] Unit tests — execution correctness
 
 ### 1.5 Builtins
-- [ ] `cd`, `pwd`
-- [ ] `export`, `unset`, `env`
+- [x] `cd`, `pwd`
+- [x] `export`, `unset`, `env`
 - [ ] `alias`, `unalias`
-- [ ] `source` / `.`
-- [ ] `echo`, `printf`
-- [ ] `exit`, `return`
+- [~] `source` / `.` — reads file, TODO: actually execute
+- [x] `echo`
+- [ ] `printf`
+- [x] `exit`
+- [ ] `return`
 - [ ] `set`, `shift`
 - [ ] `test` / `[`
 - [ ] `read`
