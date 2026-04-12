@@ -68,12 +68,13 @@
 - [~] Unit tests — basic tests done, need edge cases
 
 ### 1.4 Executor
-- [ ] Fork/exec pipeline
-- [ ] Pipe setup (`|`)
-- [ ] Redirect handling (`>`, `>>`, `<`, `2>`, `&>`)
-- [ ] Builtin dispatch
-- [ ] Exit status propagation
-- [ ] Subshell execution
+- [x] Fork/exec pipeline
+- [x] Pipe setup (`|`)
+- [~] Redirect handling — basic < > >> done, need 2>>, &>, heredocs
+- [x] Builtin dispatch
+- [x] Exit status propagation
+- [ ] Background execution (&) — runs sync, need true fork
+- [ ] Subshell execution — runs sync, need fork
 - [ ] Unit tests — execution correctness
 
 ### 1.5 Builtins
