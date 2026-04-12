@@ -65,7 +65,7 @@ pub enum Command {
     While(WhileLoop),
     /// Case statement: case word in patterns) cmds;; esac
     Case(CaseStatement),
-    /// Function definition: name() { body; } or function name { body; }
+    /// Function definition: `name()` { body; } or function name { body; }
     Function(FunctionDefinition),
 }
 
@@ -218,19 +218,19 @@ impl Parser {
         match self.try_parse_list() {
             Ok(cmd) => {
                 let leftover = self.peek().clone();
-                if leftover != Token::Eof {
+                if leftover == Token::Eof {
                     ParseResult {
                         command: Some(cmd),
                         position: self.pos,
                         is_incomplete: false,
-                        error: Some(ParseError::Unexpected(leftover)),
+                        error: None,
                     }
                 } else {
                     ParseResult {
                         command: Some(cmd),
                         position: self.pos,
                         is_incomplete: false,
-                        error: None,
+                        error: Some(ParseError::Unexpected(leftover)),
                     }
                 }
             }
@@ -254,9 +254,8 @@ impl Parser {
     /// Check if an error indicates incomplete input (waiting for more)
     fn is_incomplete_error(&self, err: &ParseError) -> bool {
         match err {
-            ParseError::UnexpectedEof => true,
             ParseError::Expected { got, .. } => matches!(got, Token::Eof),
-            ParseError::Unexpected(Token::Eof) => true,
+            ParseError::UnexpectedEof | ParseError::Unexpected(Token::Eof) => true,
             _ => {
                 // Only treat as incomplete if we're at EOF and expecting terminators
                 if !matches!(self.peek(), Token::Eof) {
@@ -271,13 +270,14 @@ impl Parser {
 
     /// Check if we're at a position that looks like incomplete input
     /// This is called by the driver to decide whether to prompt for more input
+    #[must_use]
     pub fn is_incomplete(&self) -> bool {
         // Find the last meaningful token (not Eof, not Comment)
         let mut last_token_idx = None;
         for (idx, token) in self.tokens.iter().enumerate() {
             match token {
                 Token::Eof => break,
-                Token::Comment(_) => continue,
+                Token::Comment(_) => {}
                 _ => last_token_idx = Some(idx),
             }
         }
@@ -288,12 +288,11 @@ impl Parser {
 
         match &self.tokens[idx] {
             // Operators that expect continuation (pipe, &&, || expect another command)
-            Token::Operator(Operator::Pipe)
-            | Token::Operator(Operator::And)
-            | Token::Operator(Operator::Or) => true,
             // Note: Background (&) is NOT incomplete - it's a valid command terminator
             // Opening brackets without closing
-            Token::Operator(Operator::LBrace) | Token::Operator(Operator::LParen) => true,
+            Token::Operator(
+                Operator::Pipe | Operator::And | Operator::Or | Operator::LBrace | Operator::LParen,
+            ) => true,
             // Compound command keywords that need closing
             Token::Word(w) => matches!(w.as_str(), "if" | "while" | "for" | "case" | "function"),
             _ => false,
@@ -316,7 +315,7 @@ impl Parser {
         matches!(self.peek(), Token::Word(w) if terminators.contains(&w.as_str()))
     }
 
-    /// Check if current token is a terminator operator (RBrace, RParen, Semicolon)
+    /// Check if current token is a terminator operator (`RBrace`, `RParen`, `Semicolon`)
     fn is_terminator_op(&self, terminators: &[&str]) -> bool {
         match self.peek() {
             Token::Operator(Operator::RBrace) if terminators.contains(&"}") => true,
@@ -513,7 +512,7 @@ impl Parser {
 
         let words = if matches!(self.peek(), Token::Word(w) if w == "in") {
             self.advance();
-            self.parse_for_words()?
+            self.parse_for_words()
         } else {
             Vec::new() // Empty means iterate over "$@"
         };
@@ -526,7 +525,7 @@ impl Parser {
     }
 
     /// Parse words until semicolon or do keyword (for for-loop)
-    fn parse_for_words(&mut self) -> Result<Vec<String>, ParseError> {
+    fn parse_for_words(&mut self) -> Vec<String> {
         let mut words = Vec::new();
         loop {
             match self.peek() {
@@ -542,7 +541,7 @@ impl Parser {
                 _ => break,
             }
         }
-        Ok(words)
+        words
     }
 
     /// Parse while loop: while cmd; do cmds; done
@@ -583,7 +582,7 @@ impl Parser {
         Ok(Command::Case(CaseStatement { word, clauses }))
     }
 
-    /// Parse function definition: function name { body; } or function name() { body; }
+    /// Parse function definition: function name { body; } or function `name()` { body; }
     fn parse_function(&mut self) -> Result<Command, ParseError> {
         self.expect_word("function")?;
         let name = self.expect_word_value()?;
@@ -598,9 +597,9 @@ impl Parser {
         Ok(Command::Function(FunctionDefinition { name, body }))
     }
 
-    /// Try to parse function definition: name() { body; }
-    /// Returns Ok(Some(func)) if it's a function def, Ok(None) if not
-    /// SAFETY: Must be called when self.peek() is the word token containing `name`
+    /// Try to parse function definition: `name()` { body; }
+    /// Returns `Ok(Some(func))` if it's a function def, `Ok(None)` if not
+    /// SAFETY: Must be called when `self.peek()` is the word token containing `name`
     fn try_parse_function_def(
         &mut self,
         name: &str,
@@ -709,12 +708,11 @@ impl Parser {
                         });
                     }
                 }
-            } else {
-                return Err(ParseError::Expected {
-                    expected: "pattern word".to_string(),
-                    got: self.peek().clone(),
-                });
             }
+            return Err(ParseError::Expected {
+                expected: "pattern word".to_string(),
+                got: self.peek().clone(),
+            });
         }
         Ok(patterns)
     }
@@ -801,25 +799,22 @@ impl Parser {
         if needs_target {
             // Clone the token to avoid borrow issues
             let next_token = self.peek_next().clone();
-            match next_token {
-                Token::Word(t) => {
-                    // Advance past the redirect token AND the target word
-                    self.advance(); // consume redirect
-                    self.advance(); // consume target
-                    Ok(Redirect {
-                        fd,
-                        kind,
-                        target: t,
-                    })
-                }
-                _ => {
-                    // Just consume the redirect token, error on missing target
-                    self.advance();
-                    Err(ParseError::Expected {
-                        expected: "redirect target".to_string(),
-                        got: next_token,
-                    })
-                }
+            if let Token::Word(t) = next_token {
+                // Advance past the redirect token AND the target word
+                self.advance(); // consume redirect
+                self.advance(); // consume target
+                Ok(Redirect {
+                    fd,
+                    kind,
+                    target: t,
+                })
+            } else {
+                // Just consume the redirect token, error on missing target
+                self.advance();
+                Err(ParseError::Expected {
+                    expected: "redirect target".to_string(),
+                    got: next_token,
+                })
             }
         } else {
             // Heredoc/Herestring: just consume the redirect token
