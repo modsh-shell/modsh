@@ -33,6 +33,11 @@
   - [x] `cargo install cargo-nextest`
   - [x] `cargo install cargo-skill`
   - [x] Add `pre-commit` config (fmt, clippy, audit)
+  - [ ] Add `AGENTS.md` at workspace root
+    - Cross-agent contract: which crate owns what, where AI suggestions write output,
+      verification requirement before a suggestion surfaces to the user
+    - Specifies: output paths (`~/.local/share/modsh/sessions/`), skill loader
+      discovery order, session file naming convention (`<remote>-<branch>`)
 
 ---
 
@@ -206,6 +211,25 @@
 - [ ] Explicit opt-in for any network activity
 - [ ] Context db encryption at rest (optional)
 - [ ] `modsh context purge` command
+
+### 5.6 Skill Loader
+- [ ] Implement skill file discovery in priority order:
+  - [ ] `.skill/context.md` (cargo-skill active session)
+  - [ ] `.modsh/skills/*.md` (project-local)
+  - [ ] `~/.local/share/modsh/skills/*.md` (user-level)
+- [ ] Load only active scope — not all skill files per invocation
+- [ ] Skip load (no-op) if no skill files found — no error
+- [ ] Unit tests — discovery order, missing files, empty context
+
+### 5.7 Session Memory
+- [ ] Define session file path: `~/.local/share/modsh/sessions/<slug>.md`
+  - Slug derived from git remote + branch; fallback to hostname + cwd hash
+- [ ] Write session file: last N commands, inferred project context, user corrections
+- [ ] Read session file on startup before first inference call
+- [ ] Append-only writes during session; no full rewrites
+- [ ] `modsh context session clear` — delete current session file
+- [ ] `modsh context session show` — print active session file path + line count
+- [ ] Unit tests — slug derivation, write/read round-trip, clear
 
 ---
 

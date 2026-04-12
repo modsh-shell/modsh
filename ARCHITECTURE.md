@@ -21,7 +21,8 @@ modsh/                          # Cargo workspace root
 ├── modsh-core/                 # POSIX-compatible shell core       [Apache-2.0]
 ├── modsh-interactive/          # Extended interactive layer        [Apache-2.0]
 ├── modsh-ai/                   # AI context engine                 [BSL 1.1]
-└── modsh-cli/                  # Binary entrypoint                 [Apache-2.0]
+├── modsh-cli/                  # Binary entrypoint                 [Apache-2.0]
+└── AGENTS.md                   # Cross-agent behavioral contract   [repo-level]
 ```
 
 ---
@@ -109,6 +110,42 @@ User accepts/rejects →  feedback updates graph weights
 - Model-agnostic — any GGUF-compatible model works
 - Context stored in SQLite (`~/.local/share/modsh/context.db`)
 
+### Skill loader
+
+modsh-ai reads skill files at startup using the same discovery path as cargo-skill:
+
+```
+Priority order (first found wins):
+  1. `.skill/context.md`          — active session context (set by `cargo skill`)
+  2. `.modsh/skills/*.md`         — project-local skill overrides
+  3. `~/.local/share/modsh/skills/*.md`  — user-level skill defaults
+```
+
+Skill files are loaded into the context window before the first inference call of
+a session. Only the active layer scope is loaded — not all skills simultaneously.
+This keeps prompt cache stable across invocations.
+
+The `.skill/context.md` file written by `cargo-skill` is the primary integration
+point. `cargo skill write` in a modsh session activates full execution context;
+`cargo skill lookup <prefix>` narrows the AI engine to a specific rule domain.
+
+### Session memory
+
+Long-running or resumable sessions write externalized state to:
+
+```
+~/.local/share/modsh/sessions/<slug>.md
+```
+
+The slug is derived from the current git remote + branch (e.g., `modsh-main`).
+On shell startup, modsh-ai checks for an existing session file and loads it before
+the first inference call. The session file records: last N commands, inferred
+project context, active patterns, and any user corrections.
+
+This is distinct from `context.db` (the full context graph). The session file is
+a lightweight, human-readable working memory for the current session — writable by
+the AI engine, readable by the user.
+
 ---
 
 ## Binary entrypoint (`modsh-cli`)
@@ -126,13 +163,17 @@ Wires all three layers together. Handles:
 ## Data Flow
 
 ```
+shell startup
+    → modsh-ai (load .skill/context.md if present)
+    → modsh-ai (load session file if present: ~/.local/share/modsh/sessions/<slug>.md)
+
 keystroke
     → modsh-interactive (line editor)
     → modsh-ai (context-aware suggestion, async)
     → user confirms input
     → modsh-core (parse + execute)
     → output
-    → modsh-ai (observe result, update context graph)
+    → modsh-ai (observe result, update context graph, append to session file)
 ```
 
 ---

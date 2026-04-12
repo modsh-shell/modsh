@@ -35,6 +35,24 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full design.
 
 ---
 
+## AI Context Integration
+
+modsh-ai integrates directly with [`cargo-skill`](https://github.com/SHA888/cargo-skill).
+Running `cargo skill` in a modsh project activates the appropriate skill scope for the
+current session:
+
+| Command | Effect in modsh-ai |
+|---|---|
+| `cargo skill lookup <prefix>` | Narrows AI suggestions to that rule domain |
+| `cargo skill think` | Activates lookup + reasoning layers |
+| `cargo skill write` | Activates all layers — full execution context |
+| `cargo skill clear` | Resets to default inference (no skill scope) |
+
+The `.skill/context.md` file written by `cargo-skill` is read by modsh-ai at session
+startup. No daemon, no IPC — file-based handoff only.
+
+---
+
 ## Licensing
 
 modsh uses a dual-license model:
