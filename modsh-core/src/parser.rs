@@ -242,7 +242,11 @@ impl Parser {
             LRedirect::Input { fd } => (fd, RedirectKind::Input, String::new()),
             LRedirect::Output { fd } => (fd, RedirectKind::Output, String::new()),
             LRedirect::Append { fd } => (fd, RedirectKind::Append, String::new()),
-            LRedirect::Heredoc { delimiter, quoted: _ } => (None, RedirectKind::Heredoc, delimiter),
+            LRedirect::Heredoc { delimiter: _, quoted: _, body } => {
+                // Heredoc body is stored in target field for now
+                // In full implementation, this would be handled specially
+                (None, RedirectKind::Heredoc, body)
+            }
             LRedirect::Herestring { word } => (None, RedirectKind::Herestring, word),
             LRedirect::ReadWrite { fd } => (fd, RedirectKind::ReadWrite, String::new()),
         };

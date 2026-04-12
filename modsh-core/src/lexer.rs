@@ -80,6 +80,8 @@ pub enum Redirect {
         delimiter: String,
         /// Whether delimiter was quoted (suppresses expansion in body)
         quoted: bool,
+        /// Heredoc body content (lines between delimiters)
+        body: String,
     },
     /// Here-string: <<<
     Herestring {
@@ -221,7 +223,8 @@ impl<'a> Lexer<'a> {
                         Ok(Token::Redirect(Redirect::Herestring { word }))
                     } else {
                         let (delimiter, quoted) = self.read_delimiter()?;
-                        Ok(Token::Redirect(Redirect::Heredoc { delimiter, quoted }))
+                        let body = self.read_heredoc_body(&delimiter)?;
+                        Ok(Token::Redirect(Redirect::Heredoc { delimiter, quoted, body }))
                     }
                 } else if self.peek() == '>' {
                     self.advance();
@@ -262,7 +265,8 @@ impl<'a> Lexer<'a> {
                         Ok(Token::Redirect(Redirect::Herestring { word }))
                     } else {
                         let (delimiter, quoted) = self.read_delimiter()?;
-                        Ok(Token::Redirect(Redirect::Heredoc { delimiter, quoted }))
+                        let body = self.read_heredoc_body(&delimiter)?;
+                        Ok(Token::Redirect(Redirect::Heredoc { delimiter, quoted, body }))
                     }
                 } else if self.peek() == '>' {
                     self.advance();
@@ -310,6 +314,56 @@ impl<'a> Lexer<'a> {
             self.advance();
         }
         Ok((self.input[start..self.pos].to_string(), false))
+    }
+
+    /// Read heredoc body content until the closing delimiter
+    fn read_heredoc_body(&mut self, delimiter: &str) -> Result<String, LexError> {
+        // Must be at end of the << delimiter line (or at least consume to newline)
+        // The body starts on the next line
+        let mut body = String::new();
+        let mut first_line = true;
+
+        loop {
+            // Read until we find a line that matches the delimiter
+            // First, consume any remaining content on current line if not at newline
+            while !self.is_at_end() && self.peek() != '\n' {
+                self.advance();
+            }
+
+            // Now we're at newline or end - consume the newline to start next line
+            if self.is_at_end() {
+                // End of input without finding delimiter
+                return Err(LexError::UnterminatedHeredoc);
+            }
+            self.advance(); // consume \n
+
+            // Check if this line is the delimiter
+            let line_start = self.pos;
+            while !self.is_at_end() && self.peek() != '\n' {
+                self.advance();
+            }
+            let line = &self.input[line_start..self.pos];
+
+            // Check if this line matches the delimiter (with optional leading tabs)
+            let trimmed = line.trim_start_matches('\t');
+            if trimmed == delimiter {
+                // Found the closing delimiter - don't include it in body
+                // Consume the newline after delimiter
+                if !self.is_at_end() && self.peek() == '\n' {
+                    self.advance();
+                }
+                break;
+            }
+
+            // Not the delimiter - add this line to body
+            if !first_line {
+                body.push('\n');
+            }
+            first_line = false;
+            body.push_str(line);
+        }
+
+        Ok(body)
     }
 
     fn read_quoted_word(&mut self) -> Result<Token, LexError> {
