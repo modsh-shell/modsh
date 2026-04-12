@@ -53,7 +53,7 @@
 - [x] Fuzz testing — cargo-fuzz setup with lexer target (ran 37k+ iterations without crash)
 
 ### 1.2 Parser
-- [~] Define AST node types
+- [x] Define AST node types
   - [x] SimpleCommand
   - [x] Pipeline
   - [x] List (AND/OR)
