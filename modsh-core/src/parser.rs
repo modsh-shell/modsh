@@ -258,10 +258,13 @@ impl Parser {
             ParseError::Expected { got, .. } => matches!(got, Token::Eof),
             ParseError::Unexpected(Token::Eof) => true,
             _ => {
+                // Only treat as incomplete if we're at EOF and expecting terminators
+                if !matches!(self.peek(), Token::Eof) {
+                    return false;
+                }
                 // Check if we hit Eof while expecting compound command terminators
                 let eof_keywords = ["then", "else", "fi", "do", "done", "esac", "}"];
                 matches!(self.peek(), Token::Word(w) if eof_keywords.contains(&w.as_str()))
-                    || matches!(self.peek(), Token::Eof)
             }
         }
     }
@@ -284,11 +287,11 @@ impl Parser {
         };
 
         match &self.tokens[idx] {
-            // Operators that expect continuation
+            // Operators that expect continuation (pipe, &&, || expect another command)
             Token::Operator(Operator::Pipe)
             | Token::Operator(Operator::And)
-            | Token::Operator(Operator::Or)
-            | Token::Operator(Operator::Background) => true,
+            | Token::Operator(Operator::Or) => true,
+            // Note: Background (&) is NOT incomplete - it's a valid command terminator
             // Opening brackets without closing
             Token::Operator(Operator::LBrace)
             | Token::Operator(Operator::LParen) => true,
@@ -526,12 +529,12 @@ impl Parser {
         Ok(Command::For(ForLoop { var, words, body }))
     }
 
-    /// Parse words until semicolon or newline (for for-loop)
+    /// Parse words until semicolon or do keyword (for for-loop)
     fn parse_for_words(&mut self) -> Result<Vec<String>, ParseError> {
         let mut words = Vec::new();
         loop {
             match self.peek() {
-                Token::Word(w) if w == "do" || w == ";" => break,
+                Token::Word(w) if w == "do" => break,
                 Token::Operator(Operator::Semicolon) => {
                     self.advance();
                     break;
@@ -601,11 +604,16 @@ impl Parser {
 
     /// Try to parse function definition: name() { body; }
     /// Returns Ok(Some(func)) if it's a function def, Ok(None) if not
+    /// SAFETY: Must be called when self.peek() is the word token containing `name`
     fn try_parse_function_def(
         &mut self,
         name: &str,
         _terminators: &[&str],
     ) -> Result<Option<Command>, ParseError> {
+        // Verify we're at the name token (safety check)
+        if !matches!(self.peek(), Token::Word(w) if w == name) {
+            return Ok(None);
+        }
         // Look ahead: next tokens should be () for function definition
         if !matches!(self.peek_next(), Token::Operator(Operator::LParen)) {
             return Ok(None);
@@ -757,7 +765,7 @@ impl Parser {
                 Token::Redirect(r) => {
                     let redirect = self.convert_redirect(r.clone())?;
                     cmd.redirects.push(redirect);
-                    self.advance();
+                    // Note: convert_redirect advances past the redirect and its target
                 }
                 _ => break,
             }
@@ -795,20 +803,27 @@ impl Parser {
             let next_token = self.peek_next().clone();
             match next_token {
                 Token::Word(t) => {
-                    // Advance past the target word so it's not consumed as argument
-                    self.advance();
+                    // Advance past the redirect token AND the target word
+                    self.advance(); // consume redirect
+                    self.advance(); // consume target
                     Ok(Redirect {
                         fd,
                         kind,
                         target: t,
                     })
                 }
-                _ => Err(ParseError::Expected {
-                    expected: "redirect target".to_string(),
-                    got: next_token,
-                }),
+                _ => {
+                    // Just consume the redirect token, error on missing target
+                    self.advance();
+                    Err(ParseError::Expected {
+                        expected: "redirect target".to_string(),
+                        got: next_token,
+                    })
+                }
             }
         } else {
+            // Heredoc/Herestring: just consume the redirect token
+            self.advance();
             Ok(Redirect { fd, kind, target })
         }
     }
