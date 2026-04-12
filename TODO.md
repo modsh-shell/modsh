@@ -58,7 +58,7 @@
   - [x] Pipeline
   - [x] List (AND/OR)
   - [x] CompoundCommand — if/for/while/case/subshell/group all done
-  - [ ] FunctionDefinition
+  - [x] FunctionDefinition — POSIX (name() { }) and bash (function name { }) forms
 - [x] Implement recursive descent parser
 - [ ] Error recovery — parse partial input gracefully
 - [~] Unit tests — basic tests done, need comprehensive POSIX grammar tests
