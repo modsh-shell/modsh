@@ -48,37 +48,39 @@ pub struct CompletionEngine;
 
 impl CompletionEngine {
     /// Create a new completion engine
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
 
     /// Get completions for the given context
+    #[must_use]
     pub fn complete(&self, ctx: &CompletionContext) -> Vec<Completion> {
         if ctx.is_command {
-            self.complete_commands(&ctx.word)
+            Self::complete_commands(&ctx.word)
         } else if ctx.word.starts_with('$') {
-            self.complete_variables(&ctx.word)
+            Self::complete_variables(&ctx.word)
         } else if ctx.word.starts_with('-') {
-            self.complete_flags(&ctx.word)
+            Self::complete_flags(&ctx.word)
         } else {
-            self.complete_paths(&ctx.word)
+            Self::complete_paths(&ctx.word)
         }
     }
 
-    fn complete_commands(&self, prefix: &str) -> Vec<Completion> {
+    fn complete_commands(prefix: &str) -> Vec<Completion> {
         let mut results = Vec::new();
 
         // Add builtins
         let builtins = [
-            "cd", "pwd", "echo", "export", "unset", "env", "exit",
-            "true", "false", "source", ".", "alias", "unalias", "read",
-            "test", "[", "trap", "shift", "set", "return", "jobs", "fg", "bg"
+            "cd", "pwd", "echo", "export", "unset", "env", "exit", "true", "false", "source", ".",
+            "alias", "unalias", "read", "test", "[", "trap", "shift", "set", "return", "jobs",
+            "fg", "bg",
         ];
 
         for cmd in &builtins {
             if cmd.starts_with(prefix) {
                 results.push(Completion {
-                    text: cmd.to_string(),
+                    text: (*cmd).to_string(),
                     description: Some("builtin".to_string()),
                     kind: CompletionKind::Command,
                 });
@@ -110,7 +112,7 @@ impl CompletionEngine {
         results
     }
 
-    fn complete_paths(&self, prefix: &str) -> Vec<Completion> {
+    fn complete_paths(prefix: &str) -> Vec<Completion> {
         let mut results = Vec::new();
 
         let (dir_part, file_prefix) = if prefix.contains('/') {
@@ -120,9 +122,9 @@ impl CompletionEngine {
             ("./", prefix)
         };
 
-        let dir_path = if dir_part.starts_with("~/") {
+        let dir_path = if let Some(stripped) = dir_part.strip_prefix("~/") {
             let home = std::env::var("HOME").unwrap_or_default();
-            PathBuf::from(home).join(&dir_part[2..])
+            PathBuf::from(home).join(stripped)
         } else {
             PathBuf::from(dir_part)
         };
@@ -137,14 +139,10 @@ impl CompletionEngine {
                     let text = if dir_part == "./" {
                         name_str.to_string()
                     } else {
-                        format!("{}{}", dir_part, name_str)
+                        format!("{dir_part}{name_str}")
                     };
 
-                    let text = if is_dir {
-                        format!("{}/", text)
-                    } else {
-                        text
-                    };
+                    let text = if is_dir { format!("{text}/") } else { text };
 
                     results.push(Completion {
                         text,
@@ -169,14 +167,14 @@ impl CompletionEngine {
         results
     }
 
-    fn complete_variables(&self, prefix: &str) -> Vec<Completion> {
+    fn complete_variables(prefix: &str) -> Vec<Completion> {
         let mut results = Vec::new();
         let var_prefix = &prefix[1..]; // Remove $
 
         for (key, _) in std::env::vars() {
             if key.starts_with(var_prefix) {
                 results.push(Completion {
-                    text: format!("${}", key),
+                    text: format!("${key}"),
                     description: None,
                     kind: CompletionKind::Variable,
                 });
@@ -187,7 +185,7 @@ impl CompletionEngine {
         results
     }
 
-    fn complete_flags(&self, _prefix: &str) -> Vec<Completion> {
+    fn complete_flags(_prefix: &str) -> Vec<Completion> {
         // TODO: Parse --help to get flags
         Vec::new()
     }

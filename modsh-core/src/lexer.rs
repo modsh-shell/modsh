@@ -5,10 +5,13 @@ use thiserror::Error;
 /// Errors that can occur during lexing
 #[derive(Error, Debug)]
 pub enum LexError {
+    /// Unexpected character encountered
     #[error("unexpected character: {0}")]
     Unexpected(char),
+    /// Unterminated quote string
     #[error("unterminated quote")]
     UnterminatedQuote,
+    /// Unterminated heredoc delimiter
     #[error("unterminated heredoc")]
     UnterminatedHeredoc,
 }
@@ -57,17 +60,32 @@ pub enum Operator {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Redirect {
     /// Input redirection: <
-    Input { fd: Option<u32> },
+    Input {
+        /// File descriptor (None means stdin)
+        fd: Option<u32>,
+    },
     /// Output redirection: >
-    Output { fd: Option<u32> },
+    Output {
+        /// File descriptor (None means stdout)
+        fd: Option<u32>,
+    },
     /// Append output: >>
-    Append { fd: Option<u32> },
+    Append {
+        /// File descriptor (None means stdout)
+        fd: Option<u32>,
+    },
     /// Here-document: <<
-    Heredoc { delimiter: String },
+    Heredoc {
+        /// Heredoc delimiter string
+        delimiter: String,
+    },
     /// Here-string: <<<
     Herestring,
     /// Input/Output redirection: <>
-    ReadWrite { fd: Option<u32> },
+    ReadWrite {
+        /// File descriptor
+        fd: Option<u32>,
+    },
 }
 
 /// Lexer for POSIX shell syntax
@@ -78,11 +96,15 @@ pub struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     /// Create a new lexer for the given input
+    #[must_use]
     pub fn new(input: &'a str) -> Self {
         Self { input, pos: 0 }
     }
 
     /// Get the next token from the input
+    ///
+    /// # Errors
+    /// Returns an error if the input contains invalid characters or unterminated quotes
     pub fn next_token(&mut self) -> Result<Token, LexError> {
         self.skip_whitespace();
 
@@ -94,7 +116,7 @@ impl<'a> Lexer<'a> {
 
         // Handle comments
         if ch == '#' {
-            return self.read_comment();
+            return Ok(self.read_comment());
         }
 
         // Handle operators and redirections
@@ -153,12 +175,12 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn read_comment(&mut self) -> Result<Token, LexError> {
+    fn read_comment(&mut self) -> Token {
         let start = self.pos;
         while !self.is_at_end() && self.peek() != '\n' {
             self.advance();
         }
-        Ok(Token::Comment(self.input[start..self.pos].to_string()))
+        Token::Comment(self.input[start..self.pos].to_string())
     }
 
     fn read_redirect(&mut self) -> Result<Token, LexError> {
@@ -236,7 +258,10 @@ impl<'a> Lexer<'a> {
         while !self.is_at_end() {
             let ch = self.peek();
             if ch.is_ascii_whitespace()
-                || matches!(ch, '|' | '&' | ';' | '(' | ')' | '<' | '>' | '{' | '}' | '#')
+                || matches!(
+                    ch,
+                    '|' | '&' | ';' | '(' | ')' | '<' | '>' | '{' | '}' | '#'
+                )
             {
                 break;
             }
@@ -285,6 +310,9 @@ impl<'a> Lexer<'a> {
 }
 
 /// Tokenize the entire input into a vector of tokens
+///
+/// # Errors
+/// Returns an error if the input contains invalid characters or unterminated quotes
 pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
     let mut lexer = Lexer::new(input);
     let mut tokens = Vec::new();

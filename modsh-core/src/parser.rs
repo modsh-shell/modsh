@@ -6,12 +6,20 @@ use thiserror::Error;
 /// Errors that can occur during parsing
 #[derive(Error, Debug)]
 pub enum ParseError {
+    /// Unexpected token encountered
     #[error("unexpected token: {0:?}")]
     Unexpected(Token),
+    /// Unexpected end of input
     #[error("unexpected end of input")]
     UnexpectedEof,
+    /// Expected a different token
     #[error("expected {expected}, got {got:?}")]
-    Expected { expected: String, got: Token },
+    Expected {
+        /// Expected token description
+        expected: String,
+        /// Actual token received
+        got: Token,
+    },
 }
 
 /// AST node types for POSIX shell commands
@@ -80,11 +88,15 @@ pub struct Parser {
 
 impl Parser {
     /// Create a new parser from a token stream
+    #[must_use]
     pub fn new(tokens: Vec<Token>) -> Self {
         Self { tokens, pos: 0 }
     }
 
     /// Parse the entire input into a command AST
+    ///
+    /// # Errors
+    /// Returns an error if the token stream contains unexpected tokens
     pub fn parse(&mut self) -> Result<Command, ParseError> {
         self.parse_list()
     }
@@ -213,7 +225,7 @@ impl Parser {
                 Ok(())
             }
             token => Err(ParseError::Expected {
-                expected: format!("{:?}", op),
+                expected: format!("{op:?}"),
                 got: token.clone(),
             }),
         }
@@ -234,13 +246,14 @@ impl Parser {
     }
 }
 
-/// Parse a command from a string
+/// Parse an input string into a command AST
+///
+/// # Errors
+/// Returns an error if the input contains invalid syntax
 pub fn parse(input: &str) -> Result<Command, ParseError> {
-    let tokens = crate::lexer::tokenize(input).map_err(|_e| {
-        ParseError::Expected {
-            expected: "valid token".to_string(),
-            got: Token::Eof,
-        }
+    let tokens = crate::lexer::tokenize(input).map_err(|_e| ParseError::Expected {
+        expected: "valid token".to_string(),
+        got: Token::Eof,
     })?;
     let mut parser = Parser::new(tokens);
     parser.parse()

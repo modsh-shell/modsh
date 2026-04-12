@@ -8,12 +8,16 @@ use thiserror::Error;
 /// Inference errors
 #[derive(Error, Debug)]
 pub enum InferenceError {
+    /// Model not available
     #[error("model not available: {0}")]
     ModelNotAvailable(String),
+    /// Inference failed
     #[error("inference failed: {0}")]
     InferenceFailed(String),
+    /// IO error
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// Timeout
     #[error("timeout")]
     Timeout,
 }
@@ -64,26 +68,28 @@ pub struct InferenceEngine {
 
 impl InferenceEngine {
     /// Create a new inference engine
+    #[must_use]
     pub fn new(config: InferenceConfig) -> Self {
         Self { config }
     }
 
     /// Detect available models
+    ///
+    /// # Errors
+    /// Returns an error if model detection fails
     pub fn detect_models(&self) -> Result<Vec<String>, InferenceError> {
         match self.config.backend {
-            Backend::Ollama => self.list_ollama_models(),
-            Backend::LlamaCpp => self.list_llamacpp_models(),
+            Backend::Ollama => Self::list_ollama_models(),
+            Backend::LlamaCpp => Self::list_llamacpp_models(),
         }
     }
 
-    fn list_ollama_models(&self) -> Result<Vec<String>, InferenceError> {
-        let output = Command::new("ollama")
-            .args(["list"])
-            .output()?;
+    fn list_ollama_models() -> Result<Vec<String>, InferenceError> {
+        let output = Command::new("ollama").args(["list"]).output()?;
 
         if !output.status.success() {
             return Err(InferenceError::ModelNotAvailable(
-                "Ollama not available".to_string()
+                "Ollama not available".to_string(),
             ));
         }
 
@@ -100,29 +106,35 @@ impl InferenceEngine {
         Ok(models)
     }
 
-    fn list_llamacpp_models(&self) -> Result<Vec<String>, InferenceError> {
+    #[allow(clippy::unnecessary_wraps)]
+    fn list_llamacpp_models() -> Result<Vec<String>, InferenceError> {
         // llama.cpp models are just files in a directory
         // TODO: Scan configured model directory
         Ok(Vec::new())
     }
 
     /// Generate a completion
+    ///
+    /// # Errors
+    /// Returns an error if inference fails
     pub async fn complete(&self, prompt: &str, context: &str) -> Result<String, InferenceError> {
-        let full_prompt = format!("Context: {}\n\nUser: {}\n\nAssistant:", context, prompt);
+        let full_prompt = format!("Context: {context}\n\nUser: {prompt}\n\nAssistant:");
 
         match self.config.backend {
             Backend::Ollama => self.ollama_generate(&full_prompt).await,
-            Backend::LlamaCpp => self.llamacpp_generate(&full_prompt).await,
+            Backend::LlamaCpp => Self::llamacpp_generate(&full_prompt),
         }
     }
 
     async fn ollama_generate(&self, prompt: &str) -> Result<String, InferenceError> {
         let model = if self.config.model == "auto" {
             // Pick a reasonable default
-            self.list_ollama_models()?.into_iter().next()
-                .ok_or_else(|| InferenceError::ModelNotAvailable(
-                    "No models found in Ollama".to_string()
-                ))?
+            Self::list_ollama_models()?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    InferenceError::ModelNotAvailable("No models found in Ollama".to_string())
+                })?
         } else {
             self.config.model.clone()
         };
@@ -133,19 +145,16 @@ impl InferenceEngine {
             stream: false,
             options: OllamaOptions {
                 temperature: self.config.temperature,
-                num_predict: self.config.max_tokens as i32,
+                num_predict: i32::try_from(self.config.max_tokens).unwrap_or(i32::MAX),
             },
         };
 
         let client = reqwest::Client::new();
         let url = format!("{}/api/generate", self.config.endpoint);
-        
-        let response = tokio::time::timeout(
-            self.config.timeout,
-            client.post(&url)
-                .json(&request)
-                .send()
-        ).await;
+
+        let response =
+            tokio::time::timeout(self.config.timeout, client.post(&url).json(&request).send())
+                .await;
 
         let response = match response {
             Ok(Ok(r)) => r,
@@ -154,21 +163,24 @@ impl InferenceEngine {
         };
 
         if !response.status().is_success() {
-            return Err(InferenceError::InferenceFailed(
-                format!("HTTP {}", response.status())
-            ));
+            return Err(InferenceError::InferenceFailed(format!(
+                "HTTP {}",
+                response.status()
+            )));
         }
 
-        let body: OllamaResponse = response.json().await
+        let body: OllamaResponse = response
+            .json()
+            .await
             .map_err(|e: reqwest::Error| InferenceError::InferenceFailed(e.to_string()))?;
 
         Ok(body.response)
     }
 
-    async fn llamacpp_generate(&self, _prompt: &str) -> Result<String, InferenceError> {
+    fn llamacpp_generate(_prompt: &str) -> Result<String, InferenceError> {
         // TODO: Implement llama.cpp HTTP API
         Err(InferenceError::InferenceFailed(
-            "llama.cpp backend not yet implemented".to_string()
+            "llama.cpp backend not yet implemented".to_string(),
         ))
     }
 }
@@ -196,6 +208,7 @@ struct OllamaResponse {
 }
 
 /// Check if local inference is available
+#[must_use]
 pub fn is_inference_available() -> bool {
     // Check for Ollama
     if Command::new("ollama")

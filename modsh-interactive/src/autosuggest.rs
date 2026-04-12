@@ -7,8 +7,11 @@ pub struct AutosuggestEngine {
 
 impl AutosuggestEngine {
     /// Create a new autosuggestion engine
+    #[must_use]
     pub fn new() -> Self {
-        Self { history: Vec::new() }
+        Self {
+            history: Vec::new(),
+        }
     }
 
     /// Add a command to history
@@ -19,6 +22,7 @@ impl AutosuggestEngine {
     }
 
     /// Get a suggestion for the given input
+    #[must_use]
     pub fn suggest(&self, input: &str) -> Option<String> {
         if input.is_empty() {
             return None;
@@ -33,8 +37,9 @@ impl AutosuggestEngine {
     }
 
     /// Get a full suggestion (including the input prefix)
+    #[must_use]
     pub fn full_suggestion(&self, input: &str) -> Option<String> {
-        self.suggest(input).map(|suffix| format!("{}{}", input, suffix))
+        self.suggest(input).map(|suffix| format!("{input}{suffix}"))
     }
 
     /// Clear history
@@ -76,7 +81,10 @@ mod tests {
         let mut engine = AutosuggestEngine::new();
         engine.add_history("cd /home/user".to_string());
 
-        assert_eq!(engine.full_suggestion("cd"), Some("cd /home/user".to_string()));
+        assert_eq!(
+            engine.full_suggestion("cd"),
+            Some("cd /home/user".to_string())
+        );
     }
 
     #[test]

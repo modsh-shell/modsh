@@ -35,30 +35,30 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Load config
-    let config = load_config()?;
+    let config = load_config();
 
     // Execute command mode
     if let Some(cmd) = args.command {
-        return run_command(&cmd, &config).await;
+        return run_command(&cmd, &config);
     }
 
     // Execute script file
     if let Some(file) = args.file {
-        return run_script(&file, &config).await;
+        return run_script(&file, &config);
     }
 
     // Interactive mode
-    if !args.no_interactive && atty::is(atty::Stream::Stdin) {
-        run_interactive(&config, args.no_ai).await?;
+    if !args.no_interactive && atty::is(&atty::Stream::Stdin) {
+        run_interactive(&config, args.no_ai)?;
     } else {
         // Non-interactive: read from stdin
-        run_stdin(&config).await?;
+        run_stdin(&config)?;
     }
 
     Ok(())
 }
 
-async fn run_command(cmd: &str, _config: &Config) -> Result<()> {
+fn run_command(cmd: &str, _config: &Config) -> Result<()> {
     use modsh_core::executor::Executor;
     use modsh_core::parser::parse;
 
@@ -67,53 +67,58 @@ async fn run_command(cmd: &str, _config: &Config) -> Result<()> {
     let status = executor.execute(&ast)?;
 
     if !status.success() {
-        std::process::exit(status.code as i32);
+        std::process::exit(i32::from(status.code));
     }
 
     Ok(())
 }
 
-async fn run_script(file: &PathBuf, _config: &Config) -> Result<()> {
+fn run_script(file: &PathBuf, config: &Config) -> Result<()> {
     let content = std::fs::read_to_string(file)?;
-    
+
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
 
-        run_command(trimmed, _config).await?;
+        run_command(trimmed, config)?;
     }
 
     Ok(())
 }
 
-async fn run_interactive(config: &Config, _no_ai: bool) -> Result<()> {
+#[allow(clippy::unnecessary_wraps)]
+fn run_interactive(config: &Config, _no_ai: bool) -> Result<()> {
     use modsh_interactive::editor::LineEditor;
-    use modsh_interactive::prompt::{PromptEngine, PromptConfig};
     use modsh_interactive::history::HistoryEngine;
+    use modsh_interactive::prompt::{PromptConfig, PromptEngine};
 
     let mut editor = LineEditor::new();
     let mut prompt = PromptEngine::new(PromptConfig::default());
     let mut history = HistoryEngine::new();
 
     // Load history
-    let history_file = dirs::data_dir()
-        .map(|d| d.join("modsh/history"))
-        .unwrap_or_else(|| PathBuf::from(".modsh_history"));
+    let history_file = dirs::data_dir().map_or_else(
+        || PathBuf::from(".modsh_history"),
+        |d| d.join("modsh/history"),
+    );
     history.set_history_file(history_file.clone());
     let _ = history.load();
 
-    println!("modsh {} — Modern shell with AI context", env!("CARGO_PKG_VERSION"));
+    println!(
+        "modsh {} — Modern shell with AI context",
+        env!("CARGO_PKG_VERSION")
+    );
     println!("Type 'exit' to quit\n");
 
     loop {
         let prompt_str = prompt.render();
-        
+
         match editor.read_line(&prompt_str) {
             Ok(line) => {
                 let trimmed = line.trim();
-                
+
                 if trimmed.is_empty() {
                     continue;
                 }
@@ -124,23 +129,25 @@ async fn run_interactive(config: &Config, _no_ai: bool) -> Result<()> {
 
                 // Execute
                 let start = std::time::Instant::now();
-                
-                match run_command(trimmed, config).await {
+
+                match run_command(trimmed, config) {
                     Ok(()) => {
-                        let duration = start.elapsed().as_millis() as u64;
+                        let duration =
+                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                         history.add_command(line.clone(), 0, duration);
                         prompt.set_exit_code(0);
                     }
                     Err(e) => {
-                        let duration = start.elapsed().as_millis() as u64;
-                        eprintln!("Error: {}", e);
+                        let duration =
+                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                        eprintln!("Error: {e}");
                         history.add_command(line.clone(), 1, duration);
                         prompt.set_exit_code(1);
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Error reading input: {}", e);
+                eprintln!("Error reading input: {e}");
                 break;
             }
         }
@@ -152,18 +159,16 @@ async fn run_interactive(config: &Config, _no_ai: bool) -> Result<()> {
     Ok(())
 }
 
-async fn run_stdin(_config: &Config) -> Result<()> {
+fn run_stdin(_config: &Config) -> Result<()> {
     let mut buffer = String::new();
     io::stdin().read_to_string(&mut buffer)?;
 
     for line in buffer.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
+        if !trimmed.is_empty() && !trimmed.starts_with('#') {
+            // Execute each line
+            // TODO: Batch execution for efficiency
         }
-
-        // Execute each line
-        // TODO: Batch execution for efficiency
     }
 
     Ok(())
@@ -171,6 +176,7 @@ async fn run_stdin(_config: &Config) -> Result<()> {
 
 /// Configuration for modsh
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct Config {
     posix_strict: bool,
     ai_enabled: bool,
@@ -187,20 +193,21 @@ impl Default for Config {
     }
 }
 
-fn load_config() -> Result<Config> {
+fn load_config() -> Config {
     // TODO: Load from ~/.config/modsh/config.toml
-    Ok(Config::default())
+    Config::default()
 }
 
 // Simple atty replacement
 mod atty {
+    #[allow(dead_code)]
     pub enum Stream {
         Stdin,
         Stdout,
         Stderr,
     }
 
-    pub fn is(stream: Stream) -> bool {
+    pub fn is(stream: &Stream) -> bool {
         match stream {
             Stream::Stdin => unsafe { libc::isatty(0) != 0 },
             Stream::Stdout => unsafe { libc::isatty(1) != 0 },

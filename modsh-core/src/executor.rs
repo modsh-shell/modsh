@@ -6,14 +6,19 @@ use thiserror::Error;
 /// Errors that can occur during execution
 #[derive(Error, Debug)]
 pub enum ExecError {
+    /// Command not found in PATH
     #[error("command not found: {0}")]
     CommandNotFound(String),
+    /// IO error during execution
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// Invalid redirect specification
     #[error("invalid redirect: {0}")]
     InvalidRedirect(String),
+    /// Non-zero exit status
     #[error("exit status: {0}")]
     ExitStatus(i32),
+    /// Builtin command error
     #[error("builtin error: {0}")]
     Builtin(#[from] crate::builtins::BuiltinError),
 }
@@ -29,18 +34,29 @@ pub struct ExitStatus {
 
 impl ExitStatus {
     /// Success status
-    pub const SUCCESS: Self = Self { code: 0, signaled: false };
+    pub const SUCCESS: Self = Self {
+        code: 0,
+        signaled: false,
+    };
 
     /// Create from a process exit status
+    #[must_use]
     pub fn from_process(status: std::process::ExitStatus) -> Self {
         if let Some(code) = status.code() {
-            Self { code: code as u8, signaled: false }
+            Self {
+                code: u8::try_from(code).unwrap_or(255),
+                signaled: false,
+            }
         } else {
-            Self { code: 1, signaled: true }
+            Self {
+                code: 1,
+                signaled: true,
+            }
         }
     }
 
     /// Check if the command succeeded
+    #[must_use]
     pub fn success(&self) -> bool {
         self.code == 0 && !self.signaled
     }
@@ -56,6 +72,7 @@ pub struct Executor {
 
 impl Executor {
     /// Create a new executor
+    #[must_use]
     pub fn new() -> Self {
         Self {
             env: std::env::vars().collect(),
@@ -64,6 +81,9 @@ impl Executor {
     }
 
     /// Execute a command AST
+    ///
+    /// # Errors
+    /// Returns an error if the command cannot be found or execution fails
     pub fn execute(&mut self, cmd: &Command) -> Result<ExitStatus, ExecError> {
         match cmd {
             Command::Simple(s) => self.execute_simple(s),
@@ -96,9 +116,7 @@ impl Executor {
                 // TODO: Fork and execute in subshell
                 self.execute(cmd)
             }
-            Command::Group(cmd) => {
-                self.execute(cmd)
-            }
+            Command::Group(cmd) => self.execute(cmd),
         }
     }
 
@@ -109,7 +127,7 @@ impl Executor {
         }
 
         let program = &cmd.words[0];
-        let args: Vec<&str> = cmd.words[1..].iter().map(|s| s.as_str()).collect();
+        let args: Vec<&str> = cmd.words[1..].iter().map(String::as_str).collect();
 
         // Check if it's a builtin
         if let Some(builtin) = crate::builtins::get_builtin(program) {
@@ -126,27 +144,21 @@ impl Executor {
 
         for redirect in &cmd.redirects {
             match (&redirect.fd, &redirect.kind) {
-                (None, RedirectKind::Input) | (Some(0), RedirectKind::Input) => {
-                    stdin = std::process::Stdio::from(
-                        std::fs::File::open(&redirect.target)?
-                    );
+                (None | Some(0), RedirectKind::Input) => {
+                    stdin = std::process::Stdio::from(std::fs::File::open(&redirect.target)?);
                 }
-                (None, RedirectKind::Output) | (Some(1), RedirectKind::Output) => {
-                    stdout = std::process::Stdio::from(
-                        std::fs::File::create(&redirect.target)?
-                    );
+                (None | Some(1), RedirectKind::Output) => {
+                    stdout = std::process::Stdio::from(std::fs::File::create(&redirect.target)?);
                 }
                 (Some(2), RedirectKind::Output) => {
-                    stderr = std::process::Stdio::from(
-                        std::fs::File::create(&redirect.target)?
-                    );
+                    stderr = std::process::Stdio::from(std::fs::File::create(&redirect.target)?);
                 }
-                (None, RedirectKind::Append) | (Some(1), RedirectKind::Append) => {
+                (None | Some(1), RedirectKind::Append) => {
                     stdout = std::process::Stdio::from(
                         std::fs::OpenOptions::new()
                             .create(true)
                             .append(true)
-                            .open(&redirect.target)?
+                            .open(&redirect.target)?,
                     );
                 }
                 _ => {
@@ -193,20 +205,22 @@ impl Executor {
 
             let program = match cmd {
                 Command::Simple(s) if !s.words.is_empty() => &s.words[0],
-                _ => return Err(ExecError::CommandNotFound("invalid pipeline command".to_string())),
+                _ => {
+                    return Err(ExecError::CommandNotFound(
+                        "invalid pipeline command".to_string(),
+                    ))
+                }
             };
 
             let args: Vec<&str> = match cmd {
-                Command::Simple(s) => s.words[1..].iter().map(|s| s.as_str()).collect(),
+                Command::Simple(s) => s.words[1..].iter().map(String::as_str).collect(),
                 _ => vec![],
             };
 
             let program_path = self.find_in_path(program)?;
 
             let mut command = std::process::Command::new(&program_path);
-            command
-                .args(&args)
-                .current_dir(&self.cwd);
+            command.args(&args).current_dir(&self.cwd);
 
             // Set up stdin
             if is_first {
@@ -255,9 +269,8 @@ impl Executor {
             let path = std::path::PathBuf::from(program);
             if path.exists() {
                 return Ok(path);
-            } else {
-                return Err(ExecError::CommandNotFound(program.to_string()));
             }
+            return Err(ExecError::CommandNotFound(program.to_string()));
         }
 
         // Search in PATH

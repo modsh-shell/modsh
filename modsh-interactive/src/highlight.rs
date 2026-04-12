@@ -1,7 +1,8 @@
 //! Syntax highlighter — Real-time token coloring
 
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
-use modsh_core::lexer::{tokenize, Token, Operator, Redirect};
+use modsh_core::lexer::{tokenize, Operator, Redirect, Token};
+use std::fmt::Write;
 
 /// Style for a token
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -22,7 +23,9 @@ impl Style {
     /// Operator style
     pub const OPERATOR: Self = Self { fg: Color::Blue };
     /// Comment style
-    pub const COMMENT: Self = Self { fg: Color::DarkGrey };
+    pub const COMMENT: Self = Self {
+        fg: Color::DarkGrey,
+    };
     /// Error style
     pub const ERROR: Self = Self { fg: Color::Red };
 }
@@ -35,15 +38,16 @@ pub struct Highlighter {
 
 impl Highlighter {
     /// Create a new highlighter
+    #[must_use]
     pub fn new() -> Self {
         Self { check_path: true }
     }
 
     /// Highlight a line of input
+    #[must_use]
     pub fn highlight(&self, input: &str) -> String {
-        let tokens = match tokenize(input) {
-            Ok(t) => t,
-            Err(_) => return input.to_string(),
+        let Ok(tokens) = tokenize(input) else {
+            return input.to_string();
         };
 
         let mut result = String::new();
@@ -58,16 +62,27 @@ impl Highlighter {
             let text = token_text(token);
 
             // Apply style
-            result.push_str(&format!("{}{}{}", 
+            let _ = write!(
+                result,
+                "{}{}{}",
                 SetForegroundColor(style.fg),
                 text,
                 ResetColor
-            ));
+            );
 
             if matches!(token, Token::Word(_)) {
                 is_first = false;
             }
-            if matches!(token, Token::Operator(Operator::Pipe | Operator::Semicolon | Operator::And | Operator::Or | Operator::Background)) {
+            if matches!(
+                token,
+                Token::Operator(
+                    Operator::Pipe
+                        | Operator::Semicolon
+                        | Operator::And
+                        | Operator::Or
+                        | Operator::Background
+                )
+            ) {
                 is_first = true;
             }
         }
@@ -88,8 +103,7 @@ impl Highlighter {
                     Style::ARG
                 }
             }
-            Token::Operator(_) => Style::OPERATOR,
-            Token::Redirect(_) => Style::OPERATOR,
+            Token::Operator(_) | Token::Redirect(_) => Style::OPERATOR,
             Token::Comment(_) => Style::COMMENT,
             Token::Eof => Style::ARG,
         }
@@ -125,16 +139,17 @@ fn token_text(token: &Token) -> String {
             Redirect::Herestring => "<<<".to_string(),
             Redirect::ReadWrite { .. } => "<>".to_string(),
         },
-        Token::Comment(c) => format!("#{}", c),
+        Token::Comment(c) => format!("#{c}"),
         Token::Eof => String::new(),
     }
 }
 
 fn is_valid_command(cmd: &str) -> bool {
     // Builtins are always valid
-    let builtins = ["cd", "pwd", "echo", "export", "unset", "env", "exit", 
-                    "true", "false", "source", ".", "alias", "unalias", "read",
-                    "test", "[", "trap", "shift", "set", "return"];
+    let builtins = [
+        "cd", "pwd", "echo", "export", "unset", "env", "exit", "true", "false", "source", ".",
+        "alias", "unalias", "read", "test", "[", "trap", "shift", "set", "return",
+    ];
     if builtins.contains(&cmd) {
         return true;
     }

@@ -11,10 +11,10 @@
 
 #![warn(missing_docs)]
 
-pub mod editor;
-pub mod highlight;
 pub mod autosuggest;
 pub mod complete;
-pub mod prompt;
+pub mod editor;
+pub mod highlight;
 pub mod history;
 pub mod plugin;
+pub mod prompt;

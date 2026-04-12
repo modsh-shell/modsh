@@ -1,7 +1,7 @@
 //! History engine — Structured history with metadata
 
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -30,6 +30,7 @@ pub struct HistoryEngine {
 
 impl HistoryEngine {
     /// Create a new history engine
+    #[must_use]
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
@@ -68,6 +69,7 @@ impl HistoryEngine {
     }
 
     /// Search history with a query
+    #[must_use]
     pub fn search(&self, query: &str) -> Vec<&HistoryEntry> {
         self.entries
             .iter()
@@ -76,6 +78,7 @@ impl HistoryEngine {
     }
 
     /// Search with fuzzy matching
+    #[must_use]
     pub fn fuzzy_search(&self, query: &str) -> Vec<&HistoryEntry> {
         // Simple substring matching for now
         // TODO: Implement proper fuzzy matching
@@ -83,6 +86,7 @@ impl HistoryEngine {
     }
 
     /// Filter by directory
+    #[must_use]
     pub fn filter_by_directory(&self, dir: &PathBuf) -> Vec<&HistoryEntry> {
         self.entries
             .iter()
@@ -91,11 +95,13 @@ impl HistoryEngine {
     }
 
     /// Get recent entries
+    #[must_use]
     pub fn recent(&self, n: usize) -> Vec<&HistoryEntry> {
         self.entries.iter().rev().take(n).collect()
     }
 
     /// Get all entries
+    #[must_use]
     pub fn all(&self) -> &[HistoryEntry] {
         &self.entries
     }
@@ -111,6 +117,9 @@ impl HistoryEngine {
     }
 
     /// Load history from file
+    ///
+    /// # Errors
+    /// Returns an error if the history file cannot be read
     pub fn load(&mut self) -> Result<(), std::io::Error> {
         if let Some(ref path) = self.history_file {
             if path.exists() {
@@ -128,30 +137,43 @@ impl HistoryEngine {
     }
 
     /// Save history to file
-    pub fn save(&self) -> Result<(), std::io::Error> {
+    ///
+    /// # Errors
+    /// Returns an error if the history file cannot be written
+    pub fn save(&self) -> Result<()> {
         if let Some(ref path) = self.history_file {
             let mut content = String::new();
             for entry in &self.entries {
                 content.push_str(&entry.command);
                 content.push('\n');
             }
-            std::fs::write(path, content)?;
+            std::fs::write(path, content)
+                .with_context(|| format!("Failed to write history to {}", path.display()))?;
         }
         Ok(())
     }
 
     /// Export history to a file
-    pub fn export(&self, path: &PathBuf) -> Result<(), std::io::Error> {
+    ///
+    /// # Errors
+    /// Returns an error if serialization or file write fails
+    pub fn export(&self, path: &PathBuf) -> Result<()> {
         let json = serde_json::to_string_pretty(&self.entries)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        std::fs::write(path, json)?;
+            .context("Failed to serialize history entries")?;
+        std::fs::write(path, json)
+            .with_context(|| format!("Failed to export history to {}", path.display()))?;
         Ok(())
     }
 
     /// Import history from a file
-    pub fn import(&mut self, path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-        let content = std::fs::read_to_string(path)?;
-        let entries: Vec<HistoryEntry> = serde_json::from_str(&content)?;
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be read or deserialized
+    pub fn import(&mut self, path: &PathBuf) -> Result<()> {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read history from {}", path.display()))?;
+        let entries: Vec<HistoryEntry> =
+            serde_json::from_str(&content).context("Failed to deserialize history entries")?;
         self.entries.extend(entries);
         Ok(())
     }

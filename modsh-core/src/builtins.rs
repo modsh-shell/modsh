@@ -6,10 +6,13 @@ use thiserror::Error;
 /// Errors from builtin commands
 #[derive(Error, Debug)]
 pub enum BuiltinError {
+    /// Generic error with message
     #[error("{0}")]
     Generic(String),
+    /// Exit with status code
     #[error("exit {0}")]
     Exit(i32),
+    /// Return from function with status code
     #[error("return {0}")]
     Return(i32),
 }
@@ -41,9 +44,7 @@ pub fn get_builtin(name: &str) -> Option<BuiltinFn> {
 fn builtin_cd(args: &[&str], env: &mut HashMap<String, String>) -> BuiltinResult {
     let path = if args.is_empty() {
         // Go to HOME
-        std::env::var("HOME").map_err(|_| {
-            BuiltinError::Generic("HOME not set".to_string())
-        })?
+        std::env::var("HOME").map_err(|_| BuiltinError::Generic("HOME not set".to_string()))?
     } else {
         args[0].to_string()
     };
@@ -56,29 +57,32 @@ fn builtin_cd(args: &[&str], env: &mut HashMap<String, String>) -> BuiltinResult
             .join(path)
     };
 
-    std::env::set_current_dir(&new_path)
-        .map_err(|e| BuiltinError::Generic(e.to_string()))?;
+    std::env::set_current_dir(&new_path).map_err(|e| BuiltinError::Generic(e.to_string()))?;
 
     // Update PWD
-    let canonical = new_path.canonicalize()
+    let canonical = new_path
+        .canonicalize()
         .unwrap_or(new_path)
         .to_string_lossy()
         .to_string();
     env.insert("PWD".to_string(), canonical.clone());
-    env.insert("OLDPWD".to_string(), env.get("PWD").cloned().unwrap_or_default());
+    env.insert(
+        "OLDPWD".to_string(),
+        env.get("PWD").cloned().unwrap_or_default(),
+    );
 
     Ok(super::executor::ExitStatus::SUCCESS)
 }
 
 /// Print working directory builtin
 fn builtin_pwd(_args: &[&str], _env: &mut HashMap<String, String>) -> BuiltinResult {
-    let cwd = std::env::current_dir()
-        .map_err(|e| BuiltinError::Generic(e.to_string()))?;
+    let cwd = std::env::current_dir().map_err(|e| BuiltinError::Generic(e.to_string()))?;
     println!("{}", cwd.display());
     Ok(super::executor::ExitStatus::SUCCESS)
 }
 
 /// Echo builtin
+#[allow(clippy::unnecessary_wraps)]
 fn builtin_echo(args: &[&str], _env: &mut HashMap<String, String>) -> BuiltinResult {
     let mut newline = true;
     let mut start = 0;
@@ -95,15 +99,16 @@ fn builtin_echo(args: &[&str], _env: &mut HashMap<String, String>) -> BuiltinRes
 
     let output = args[start..].join(" ");
     if newline {
-        println!("{}", output);
+        println!("{output}");
     } else {
-        print!("{}", output);
+        print!("{output}");
     }
 
     Ok(super::executor::ExitStatus::SUCCESS)
 }
 
 /// Export builtin
+#[allow(clippy::unnecessary_wraps)]
 fn builtin_export(args: &[&str], env: &mut HashMap<String, String>) -> BuiltinResult {
     if args.is_empty() {
         // Print all exported variables
@@ -129,6 +134,7 @@ fn builtin_export(args: &[&str], env: &mut HashMap<String, String>) -> BuiltinRe
 }
 
 /// Unset builtin
+#[allow(clippy::unnecessary_wraps)]
 fn builtin_unset(args: &[&str], env: &mut HashMap<String, String>) -> BuiltinResult {
     for arg in args {
         env.remove(*arg);
@@ -138,9 +144,10 @@ fn builtin_unset(args: &[&str], env: &mut HashMap<String, String>) -> BuiltinRes
 }
 
 /// Env builtin - print environment
+#[allow(clippy::unnecessary_wraps)]
 fn builtin_env(_args: &[&str], _env: &mut HashMap<String, String>) -> BuiltinResult {
     for (k, v) in std::env::vars() {
-        println!("{}={}", k, v);
+        println!("{k}={v}");
     }
     Ok(super::executor::ExitStatus::SUCCESS)
 }
@@ -156,24 +163,31 @@ fn builtin_exit(args: &[&str], _env: &mut HashMap<String, String>) -> BuiltinRes
 }
 
 /// True builtin
+#[allow(clippy::unnecessary_wraps)]
 fn builtin_true(_args: &[&str], _env: &mut HashMap<String, String>) -> BuiltinResult {
     Ok(super::executor::ExitStatus::SUCCESS)
 }
 
 /// False builtin
+#[allow(clippy::unnecessary_wraps)]
 fn builtin_false(_args: &[&str], _env: &mut HashMap<String, String>) -> BuiltinResult {
-    Ok(super::executor::ExitStatus { code: 1, signaled: false })
+    Ok(super::executor::ExitStatus {
+        code: 1,
+        signaled: false,
+    })
 }
 
 /// Source builtin
 fn builtin_source(args: &[&str], _env: &mut HashMap<String, String>) -> BuiltinResult {
     if args.is_empty() {
-        return Err(BuiltinError::Generic("filename argument required".to_string()));
+        return Err(BuiltinError::Generic(
+            "filename argument required".to_string(),
+        ));
     }
 
     let path = args[0];
-    let _content = std::fs::read_to_string(path)
-        .map_err(|e| BuiltinError::Generic(e.to_string()))?;
+    let _content =
+        std::fs::read_to_string(path).map_err(|e| BuiltinError::Generic(e.to_string()))?;
 
     // TODO: Execute the script content
     // For now, just return success

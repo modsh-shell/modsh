@@ -11,6 +11,6 @@
 #![warn(missing_docs)]
 
 pub mod context;
+pub mod feedback;
 pub mod inference;
 pub mod retriever;
-pub mod feedback;

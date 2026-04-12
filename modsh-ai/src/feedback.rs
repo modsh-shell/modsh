@@ -34,6 +34,7 @@ struct SuggestionState {
 
 impl FeedbackCollector {
     /// Create a new feedback collector
+    #[must_use]
     pub fn new() -> Self {
         Self {
             pending: None,
@@ -53,10 +54,13 @@ impl FeedbackCollector {
     /// Record that a suggestion was accepted
     pub fn accepted(&mut self) {
         if let Some(state) = self.pending.take() {
-            let decision_time = SystemTime::now()
-                .duration_since(state.shown_at)
-                .unwrap_or_default()
-                .as_millis() as u64;
+            let decision_time = u64::try_from(
+                SystemTime::now()
+                    .duration_since(state.shown_at)
+                    .unwrap_or_default()
+                    .as_millis(),
+            )
+            .unwrap_or(u64::MAX);
 
             self.history.push(Feedback {
                 suggestion: state.suggestion,
@@ -71,10 +75,13 @@ impl FeedbackCollector {
     /// Record that a suggestion was rejected (user typed something else)
     pub fn rejected(&mut self) {
         if let Some(state) = self.pending.take() {
-            let decision_time = SystemTime::now()
-                .duration_since(state.shown_at)
-                .unwrap_or_default()
-                .as_millis() as u64;
+            let decision_time = u64::try_from(
+                SystemTime::now()
+                    .duration_since(state.shown_at)
+                    .unwrap_or_default()
+                    .as_millis(),
+            )
+            .unwrap_or(u64::MAX);
 
             self.history.push(Feedback {
                 suggestion: state.suggestion,
@@ -87,6 +94,7 @@ impl FeedbackCollector {
     }
 
     /// Get feedback history
+    #[must_use]
     pub fn history(&self) -> &[Feedback] {
         &self.history
     }
@@ -103,7 +111,13 @@ pub struct WeightAdjuster;
 
 impl WeightAdjuster {
     /// Adjust weights based on feedback
-    pub fn adjust(_graph: &mut ContextGraph, feedback: &[Feedback]) -> Result<(), crate::context::ContextError> {
+    ///
+    /// # Errors
+    /// Returns an error if weight adjustment fails
+    pub fn adjust(
+        _graph: &mut ContextGraph,
+        feedback: &[Feedback],
+    ) -> Result<(), crate::context::ContextError> {
         for f in feedback {
             if f.accepted {
                 // Increase weight of similar commands
@@ -117,10 +131,7 @@ impl WeightAdjuster {
 }
 
 /// Prune old feedback and low-weight nodes
-pub fn prune_old_feedback(
-    feedback: &mut Vec<Feedback>,
-    before: SystemTime,
-) -> usize {
+pub fn prune_old_feedback(feedback: &mut Vec<Feedback>, before: SystemTime) -> usize {
     let initial_len = feedback.len();
     feedback.retain(|f| f.timestamp >= before);
     initial_len - feedback.len()

@@ -51,6 +51,7 @@ pub struct JobControl {
 
 impl JobControl {
     /// Create a new job control manager
+    #[must_use]
     pub fn new() -> Self {
         Self {
             jobs: HashMap::new(),
@@ -79,16 +80,19 @@ impl JobControl {
     }
 
     /// Get a job by ID
+    #[must_use]
     pub fn get_job(&self, id: usize) -> Option<&Job> {
         self.jobs.get(&id)
     }
 
     /// Get a mutable job by ID
+    #[must_use]
     pub fn get_job_mut(&mut self, id: usize) -> Option<&mut Job> {
         self.jobs.get_mut(&id)
     }
 
     /// List all jobs
+    #[must_use]
     pub fn list_jobs(&self) -> Vec<&Job> {
         self.jobs.values().collect()
     }
@@ -110,11 +114,13 @@ impl JobControl {
     }
 
     /// Get the current job ID
+    #[must_use]
     pub fn current_job(&self) -> Option<usize> {
         self.current_job
     }
 
     /// Get the previous job ID
+    #[must_use]
     pub fn previous_job(&self) -> Option<usize> {
         self.previous_job
     }
@@ -126,34 +132,39 @@ impl JobControl {
     }
 
     /// Bring a job to the foreground
+    ///
+    /// # Errors
+    /// Returns an error if the job ID is not found
     pub fn foreground(&mut self, id: usize) -> Result<(), String> {
         let _job = self.jobs.get(&id).ok_or("No such job")?;
-        
+
         // TODO: Implement proper terminal control with tcsetpgrp
         // This requires unsafe libc calls on Unix
-        
+
         self.update_current_job(id);
         Ok(())
     }
 
     /// Continue a job in the background
+    ///
+    /// # Errors
+    /// Returns an error if the job ID is not found
     pub fn background(&mut self, id: usize) -> Result<(), String> {
         let job = self.jobs.get_mut(&id).ok_or("No such job")?;
-        
+
         if job.status == JobStatus::Stopped {
             job.status = JobStatus::Running;
             // TODO: Send SIGCONT to process group
         }
-        
+
         println!("[{}] {}", id, job.command);
         Ok(())
     }
 
     /// Clean up completed jobs
     pub fn cleanup(&mut self) {
-        self.jobs.retain(|_, job| {
-            !matches!(job.status, JobStatus::Completed | JobStatus::Killed)
-        });
+        self.jobs
+            .retain(|_, job| !matches!(job.status, JobStatus::Completed | JobStatus::Killed));
     }
 }
 
@@ -172,7 +183,7 @@ pub mod signals {
         // - SIGTSTP (Ctrl+Z) - stop foreground job
         // - SIGCHLD - child process status changed
         // - SIGHUP - terminal disconnected
-        
+
         // This requires platform-specific unsafe code
     }
 }

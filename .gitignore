@@ -44,3 +44,4 @@ context.db
 *.pem
 *.key
 *.p12
+.skill/

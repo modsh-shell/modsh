@@ -1,6 +1,6 @@
 //! Line editor — Cursor movement, history, multi-line editing
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 use std::io::{self, Write};
 
 /// Line editor state
@@ -14,6 +14,7 @@ pub struct LineEditor {
 
 impl LineEditor {
     /// Create a new line editor
+    #[must_use]
     pub fn new() -> Self {
         Self {
             buffer: String::new(),
@@ -24,16 +25,19 @@ impl LineEditor {
         }
     }
 
-    /// Read a line from the user
+    /// Read a line of input
+    ///
+    /// # Errors
+    /// Returns an error if reading from stdin fails
     pub fn read_line(&mut self, prompt: &str) -> io::Result<String> {
-        print!("{}", prompt);
+        print!("{prompt}");
         io::stdout().flush()?;
 
         // TODO: Implement proper raw mode with crossterm
         // For now, use standard input
         let mut line = String::new();
         io::stdin().read_line(&mut line)?;
-        
+
         // Remove trailing newline
         if line.ends_with('\n') {
             line.pop();
@@ -41,13 +45,14 @@ impl LineEditor {
         if line.ends_with('\r') {
             line.pop();
         }
-        
+
         self.history.push(line.clone());
-        
+
         Ok(line)
     }
 
     /// Handle a key event
+    #[allow(dead_code)]
     fn handle_key(&mut self, key: KeyEvent) -> Option<ReadResult> {
         match key.code {
             KeyCode::Enter => {
@@ -106,11 +111,12 @@ impl LineEditor {
                 None
             }
             KeyCode::Esc => Some(ReadResult::Cancel),
-            KeyCode::Tab => None, // Handled by completion
+            // Tab and other keys handled by completion or default
             _ => None,
         }
     }
 
+    #[allow(dead_code)]
     fn history_up(&mut self) {
         if let Some(idx) = self.history_index {
             if idx > 0 {
@@ -125,6 +131,7 @@ impl LineEditor {
         }
     }
 
+    #[allow(dead_code)]
     fn history_down(&mut self) {
         if let Some(idx) = self.history_index {
             if idx + 1 < self.history.len() {
@@ -140,11 +147,13 @@ impl LineEditor {
     }
 
     /// Get the current buffer content
+    #[must_use]
     pub fn buffer(&self) -> &str {
         &self.buffer
     }
 
     /// Get the cursor position
+    #[must_use]
     pub fn cursor(&self) -> usize {
         self.cursor
     }

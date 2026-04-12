@@ -5,10 +5,13 @@ use thiserror::Error;
 /// Plugin errors
 #[derive(Error, Debug)]
 pub enum PluginError {
+    /// Plugin not found
     #[error("plugin not found: {0}")]
     NotFound(String),
+    /// Invalid plugin format
     #[error("invalid plugin format: {0}")]
     InvalidFormat(String),
+    /// Plugin execution failed
     #[error("plugin execution failed: {0}")]
     ExecutionFailed(String),
 }
@@ -47,6 +50,7 @@ pub struct PluginManager {
 
 impl PluginManager {
     /// Create a new plugin manager
+    #[must_use]
     pub fn new(plugin_dir: std::path::PathBuf) -> Self {
         Self {
             plugins: Vec::new(),
@@ -55,18 +59,21 @@ impl PluginManager {
     }
 
     /// Load all plugins from the plugin directory
+    ///
+    /// # Errors
+    /// Returns an error if the plugin directory cannot be read
     pub fn load_all(&mut self) -> Result<(), PluginError> {
         if !self.plugin_dir.exists() {
             return Ok(());
         }
 
-        for entry in std::fs::read_dir(&self.plugin_dir).map_err(|e| {
-            PluginError::InvalidFormat(e.to_string())
-        })? {
+        for entry in std::fs::read_dir(&self.plugin_dir)
+            .map_err(|e| PluginError::InvalidFormat(e.to_string()))?
+        {
             let entry = entry.map_err(|e| PluginError::InvalidFormat(e.to_string()))?;
             let path = entry.path();
 
-            if path.extension().map(|e| e == "wasm").unwrap_or(false) {
+            if path.extension().is_some_and(|e| e == "wasm") {
                 // TODO: Load WASM plugin
             } else if path.is_dir() {
                 // Look for manifest
@@ -81,6 +88,9 @@ impl PluginManager {
     }
 
     /// Install a plugin
+    ///
+    /// # Errors
+    /// Returns an error if the plugin cannot be installed
     pub fn install(&mut self, _source: &str) -> Result<(), PluginError> {
         // TODO: Download and install plugin from:
         // - Local path
@@ -90,14 +100,18 @@ impl PluginManager {
     }
 
     /// Remove a plugin
+    ///
+    /// # Errors
+    /// Returns an error if the plugin is not found or cannot be removed
     pub fn remove(&mut self, name: &str) -> Result<(), PluginError> {
-        let pos = self.plugins
+        let pos = self
+            .plugins
             .iter()
             .position(|p| p.manifest.name == name)
             .ok_or_else(|| PluginError::NotFound(name.to_string()))?;
 
         let plugin = self.plugins.remove(pos);
-        
+
         // Remove plugin files
         if let Err(e) = std::fs::remove_dir_all(&plugin.path) {
             return Err(PluginError::ExecutionFailed(e.to_string()));
@@ -107,16 +121,21 @@ impl PluginManager {
     }
 
     /// List installed plugins
+    #[must_use]
     pub fn list(&self) -> &[Plugin] {
         &self.plugins
     }
 
     /// Get a plugin by name
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<&Plugin> {
         self.plugins.iter().find(|p| p.manifest.name == name)
     }
 
     /// Execute a plugin hook
+    ///
+    /// # Errors
+    /// Returns an error if plugin hook execution fails
     pub fn execute_hook(&self, hook: &str, context: &str) -> Result<String, PluginError> {
         // TODO: Execute hook on all plugins that provide it
         for plugin in &self.plugins {

@@ -5,12 +5,16 @@ use thiserror::Error;
 /// Errors that can occur during expansion
 #[derive(Error, Debug)]
 pub enum ExpandError {
+    /// Undefined variable referenced
     #[error("undefined variable: {0}")]
     UndefinedVariable(String),
+    /// Invalid parameter expansion syntax
     #[error("invalid parameter expansion: {0}")]
     InvalidParameter(String),
+    /// Command substitution failed
     #[error("command substitution failed: {0}")]
     CommandSubstitution(String),
+    /// Arithmetic expansion error
     #[error("arithmetic expansion error: {0}")]
     ArithmeticError(String),
 }
@@ -22,6 +26,7 @@ pub struct Environment {
 
 impl Environment {
     /// Create a new empty environment
+    #[must_use]
     pub fn new() -> Self {
         Self {
             vars: std::collections::HashMap::new(),
@@ -29,6 +34,7 @@ impl Environment {
     }
 
     /// Create from the system environment
+    #[must_use]
     pub fn from_system() -> Self {
         let mut vars = std::collections::HashMap::new();
         for (key, value) in std::env::vars() {
@@ -38,8 +44,9 @@ impl Environment {
     }
 
     /// Get a variable value
-    pub fn get(&self, name: &str) -> Option<&String> {
-        self.vars.get(name)
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.vars.get(name).map(String::as_str)
     }
 
     /// Set a variable value
@@ -61,11 +68,16 @@ pub struct Expander<'a> {
 
 impl<'a> Expander<'a> {
     /// Create a new expander with the given environment
+    #[must_use]
     pub fn new(env: &'a Environment) -> Self {
         Self { env }
     }
 
     /// Expand a word according to POSIX rules
+    /// Expand a word with variable and special character expansion
+    ///
+    /// # Errors
+    /// Returns an error if parameter expansion is invalid
     pub fn expand(&self, word: &str) -> Result<Vec<String>, ExpandError> {
         // TODO: Full POSIX expansion
         // 1. Tilde expansion (~, ~user)
@@ -76,7 +88,7 @@ impl<'a> Expander<'a> {
         // 6. Glob/pathname expansion
 
         let expanded = self.expand_parameters(word)?;
-        let expanded = self.expand_tilde(&expanded);
+        let expanded = Self::expand_tilde(&expanded);
 
         // For now, just return as single word (no word splitting)
         Ok(vec![expanded])
@@ -92,18 +104,27 @@ impl<'a> Expander<'a> {
                 match chars.peek() {
                     Some('{') => {
                         chars.next(); // consume {
-                        let name = self.read_braced_name(&mut chars)?;
+                        let name = Self::read_braced_name(&mut chars)?;
                         let value = self.expand_braced(&name)?;
                         result.push_str(&value);
                     }
                     Some(&c) if c.is_alphabetic() || c == '_' => {
-                        let name = self.read_name(&mut chars);
-                        let value = self.env.get(&name).cloned().unwrap_or_default();
-                        result.push_str(&value);
+                        let name = Self::read_name(&mut chars);
+                        let value = self.env.get(&name).unwrap_or_default();
+                        result.push_str(value);
                     }
-                    Some(&c) if c.is_ascii_digit() || c == '@' || c == '*' || c == '#' || c == '?' || c == '-' || c == '$' || c == '!' => {
+                    Some(&c)
+                        if c.is_ascii_digit()
+                            || c == '@'
+                            || c == '*'
+                            || c == '#'
+                            || c == '?'
+                            || c == '-'
+                            || c == '$'
+                            || c == '!' =>
+                    {
                         chars.next(); // consume special var
-                        let value = self.expand_special(c);
+                        let value = Self::expand_special(c);
                         result.push_str(&value);
                     }
                     _ => {
@@ -118,17 +139,14 @@ impl<'a> Expander<'a> {
         Ok(result)
     }
 
-    fn read_braced_name(&self, chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Result<String, ExpandError> {
+    fn read_braced_name(
+        chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    ) -> Result<String, ExpandError> {
         let mut name = String::new();
 
         while let Some(&ch) = chars.peek() {
             if ch == '}' {
                 chars.next(); // consume }
-                return Ok(name);
-            }
-            if ch == ':' || ch == '-' || ch == '=' || ch == '?' || ch == '+' {
-                // Parameter expansion operators - stop here for now
-                // TODO: Implement full parameter expansion operators
                 return Ok(name);
             }
             name.push(ch);
@@ -138,7 +156,7 @@ impl<'a> Expander<'a> {
         Err(ExpandError::InvalidParameter("unclosed brace".to_string()))
     }
 
-    fn read_name(&self, chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    fn read_name(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
         let mut name = String::new();
 
         while let Some(&ch) = chars.peek() {
@@ -155,23 +173,31 @@ impl<'a> Expander<'a> {
 
     fn expand_braced(&self, name: &str) -> Result<String, ExpandError> {
         // Check for special syntax like ${VAR:-default}
+        // The name may include trailing } which we need to strip
+        let name = name.strip_suffix('}').unwrap_or(name);
+
         if let Some((var_name, suffix)) = name.split_once(':') {
             match suffix.chars().next() {
                 Some('-') => {
                     let default = &suffix[1..];
-                    Ok(self.env.get(var_name).cloned().unwrap_or_else(|| default.to_string()))
+                    Ok(self
+                        .env
+                        .get(var_name)
+                        .map_or_else(|| default.to_string(), ToString::to_string))
                 }
                 Some('=') => {
                     // TODO: Set if unset
-                    Ok(self.env.get(var_name).cloned().unwrap_or_default())
+                    Ok(self
+                        .env
+                        .get(var_name)
+                        .map(ToString::to_string)
+                        .unwrap_or_default())
                 }
                 Some('?') => {
                     let msg = &suffix[1..];
                     match self.env.get(var_name) {
-                        Some(v) => Ok(v.clone()),
-                        None => Err(ExpandError::InvalidParameter(
-                            msg.to_string()
-                        )),
+                        Some(v) => Ok(v.to_string()),
+                        None => Err(ExpandError::InvalidParameter(msg.to_string())),
                     }
                 }
                 Some('+') => {
@@ -182,33 +208,38 @@ impl<'a> Expander<'a> {
                         Ok(String::new())
                     }
                 }
-                _ => {
-                    Ok(self.env.get(name).cloned().unwrap_or_default())
-                }
+                _ => Ok(self
+                    .env
+                    .get(name)
+                    .map(ToString::to_string)
+                    .unwrap_or_default()),
             }
         } else {
-            Ok(self.env.get(name).cloned().unwrap_or_default())
+            Ok(self
+                .env
+                .get(name)
+                .map(ToString::to_string)
+                .unwrap_or_default())
         }
     }
 
-    fn expand_special(&self, ch: char) -> String {
+    fn expand_special(ch: char) -> String {
         match ch {
             '0' => std::env::current_exe()
                 .ok()
                 .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                 .unwrap_or_default(),
             '$' => std::process::id().to_string(),
-            '?' => "0".to_string(), // TODO: Track exit status
-            '#' => "0".to_string(), // TODO: Track positional params
+            '?' | '#' => "0".to_string(), // TODO: Track exit status / positional params
             _ => String::new(),
         }
     }
 
-    fn expand_tilde(&self, word: &str) -> String {
+    fn expand_tilde(word: &str) -> String {
         if word.starts_with("~/") {
             let home = std::env::var("HOME").unwrap_or_default();
             home + &word[1..]
-        } else if word.starts_with("~") {
+        } else if word.starts_with('~') {
             // ~username expansion - simplified
             // TODO: Look up user's home directory
             word.to_string()

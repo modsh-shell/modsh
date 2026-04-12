@@ -29,6 +29,7 @@ pub struct PromptEngine {
 
 impl PromptEngine {
     /// Create a new prompt engine
+    #[must_use]
     pub fn new(config: PromptConfig) -> Self {
         Self {
             config,
@@ -37,17 +38,18 @@ impl PromptEngine {
     }
 
     /// Render the prompt
+    #[must_use]
     pub fn render(&self) -> String {
         let mut result = self.config.template.clone();
 
         // Replace placeholders
         result = result.replace("[user]", &whoami::username());
         result = result.replace("[host]", &whoami::hostname());
-        result = result.replace("[cwd]", &self.current_dir());
+        result = result.replace("[cwd]", &Self::current_dir());
 
         if self.config.show_git {
-            if let Some(branch) = self.git_branch() {
-                result = result.replace("[git]", &format!("({})", branch));
+            if let Some(branch) = Self::git_branch() {
+                result = result.replace("[git]", &format!("({branch})"));
             } else {
                 result = result.replace("[git]", "");
             }
@@ -65,14 +67,14 @@ impl PromptEngine {
         self.last_exit_code = code;
     }
 
-    fn current_dir(&self) -> String {
+    fn current_dir() -> String {
         std::env::current_dir()
             .ok()
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
             .unwrap_or_else(|| "?".to_string())
     }
 
-    fn git_branch(&self) -> Option<String> {
+    fn git_branch() -> Option<String> {
         // Simple git branch detection
         let output = std::process::Command::new("git")
             .args(["branch", "--show-current"])

@@ -1,11 +1,11 @@
 //! Context graph — SQLite-based graph storage
 //!
 //! The context graph stores:
-//! - ProjectNode: Detected project type, stack, git remote
-//! - CommandNode: Command executions with metadata
-//! - PatternNode: Recurring command sequences
-//! - ServerNode: SSH hosts and their typical commands
-//! - ErrorNode: Failed commands and recovery actions
+//! - `ProjectNode`: Detected project type, stack, git remote
+//! - `CommandNode`: Command executions with metadata
+//! - `PatternNode`: Recurring command sequences
+//! - `ServerNode`: SSH hosts and their typical commands
+//! - `ErrorNode`: Failed commands and recovery actions
 
 use rusqlite::{Connection, Result as SqlResult};
 use serde::{Deserialize, Serialize};
@@ -16,12 +16,16 @@ use thiserror::Error;
 /// Context graph errors
 #[derive(Error, Debug)]
 pub enum ContextError {
+    /// Database error
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
+    /// Serialization error
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+    /// Node not found
     #[error("node not found: {0}")]
     NotFound(String),
+    /// Time error
     #[error("time error: {0}")]
     Time(String),
 }
@@ -167,6 +171,9 @@ pub struct ContextGraph {
 
 impl ContextGraph {
     /// Open or create a context graph at the given path
+    ///
+    /// # Errors
+    /// Returns an error if the database cannot be opened or schema initialized
     pub fn open(path: &PathBuf) -> Result<Self, ContextError> {
         let conn = Connection::open(path)?;
         let graph = Self { conn };
@@ -175,6 +182,9 @@ impl ContextGraph {
     }
 
     /// Create an in-memory context graph
+    ///
+    /// # Errors
+    /// Returns an error if the in-memory database cannot be created
     pub fn open_in_memory() -> Result<Self, ContextError> {
         let conn = Connection::open_in_memory()?;
         let graph = Self { conn };
@@ -206,11 +216,14 @@ impl ContextGraph {
             CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_node);
             CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_node);
             CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
-            "
+            ",
         )
     }
 
     /// Add a node to the graph
+    ///
+    /// # Errors
+    /// Returns an error if the node cannot be serialized or inserted
     pub fn add_node(&mut self, node: &Node) -> Result<(), ContextError> {
         let (id, kind, data, created, updated) = match node {
             Node::Project(n) => (
@@ -250,8 +263,10 @@ impl ContextGraph {
             ),
         };
 
-        let created_secs = created.duration_since(SystemTime::UNIX_EPOCH)?.as_secs() as i64;
-        let updated_secs = updated.duration_since(SystemTime::UNIX_EPOCH)?.as_secs() as i64;
+        let created_secs = i64::try_from(created.duration_since(SystemTime::UNIX_EPOCH)?.as_secs())
+            .unwrap_or(i64::MAX);
+        let updated_secs = i64::try_from(updated.duration_since(SystemTime::UNIX_EPOCH)?.as_secs())
+            .unwrap_or(i64::MAX);
 
         self.conn.execute(
             "INSERT OR REPLACE INTO nodes (id, kind, data, created, updated) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -262,10 +277,13 @@ impl ContextGraph {
     }
 
     /// Get a node by ID
+    ///
+    /// # Errors
+    /// Returns an error if the database query fails or deserialization fails
     pub fn get_node(&self, id: &str) -> Result<Option<Node>, ContextError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT kind, data FROM nodes WHERE id = ?1"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT kind, data FROM nodes WHERE id = ?1")?;
 
         let row = stmt.query_row([id], |row| {
             let kind: String = row.get(0)?;
@@ -281,7 +299,7 @@ impl ContextGraph {
                     "pattern" => Node::Pattern(serde_json::from_str(&data)?),
                     "server" => Node::Server(serde_json::from_str(&data)?),
                     "error" => Node::Error(serde_json::from_str(&data)?),
-                    _ => return Err(ContextError::NotFound(format!("Unknown node kind: {}", kind))),
+                    _ => return Err(ContextError::NotFound(format!("Unknown node kind: {kind}"))),
                 };
                 Ok(Some(node))
             }
@@ -291,19 +309,31 @@ impl ContextGraph {
     }
 
     /// Add an edge
+    ///
+    /// # Errors
+    /// Returns an error if the edge cannot be inserted
     pub fn add_edge(&mut self, edge: &Edge) -> Result<(), ContextError> {
         self.conn.execute(
             "INSERT INTO edges (from_node, to_node, kind, weight) VALUES (?1, ?2, ?3, ?4)",
-            (&edge.from, &edge.to, format!("{:?}", edge.kind), edge.weight),
+            (
+                &edge.from,
+                &edge.to,
+                format!("{:?}", edge.kind),
+                edge.weight,
+            ),
         )?;
         Ok(())
     }
 
     /// Get related nodes
+    ///
+    /// # Errors
+    /// Returns an error if the database query fails
+    #[allow(clippy::cast_possible_truncation)]
     pub fn get_related(&self, node_id: &str) -> Result<Vec<(Node, EdgeKind, f32)>, ContextError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT to_node, kind, weight FROM edges WHERE from_node = ?1"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT to_node, kind, weight FROM edges WHERE from_node = ?1")?;
 
         let rows = stmt.query_map([node_id], |row| {
             let to: String = row.get(0)?;
@@ -319,7 +349,6 @@ impl ContextGraph {
                 let kind = match kind_str.as_str() {
                     "InProject" => EdgeKind::InProject,
                     "Sequence" => EdgeKind::Sequence,
-                    "Similar" => EdgeKind::Similar,
                     "FixedBy" => EdgeKind::FixedBy,
                     _ => EdgeKind::Similar,
                 };
@@ -331,12 +360,19 @@ impl ContextGraph {
     }
 
     /// Query commands by project
-    pub fn query_project_commands(&self, project_id: &str, limit: usize) -> Result<Vec<CommandNode>, ContextError> {
+    ///
+    /// # Errors
+    /// Returns an error if the database query fails
+    pub fn query_project_commands(
+        &self,
+        project_id: &str,
+        limit: usize,
+    ) -> Result<Vec<CommandNode>, ContextError> {
         let mut stmt = self.conn.prepare(
-            "SELECT data FROM nodes WHERE kind = 'command' ORDER BY updated DESC LIMIT ?1"
+            "SELECT data FROM nodes WHERE kind = 'command' ORDER BY updated DESC LIMIT ?1",
         )?;
 
-        let rows = stmt.query_map([limit as i64], |row| {
+        let rows = stmt.query_map([i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
             let data: String = row.get(0)?;
             Ok(data)
         })?;
@@ -355,28 +391,31 @@ impl ContextGraph {
     }
 
     /// Prune old nodes
+    ///
+    /// # Errors
+    /// Returns an error if the database query fails
     pub fn prune(&mut self, before: SystemTime) -> Result<usize, ContextError> {
-        let before_secs = before.duration_since(SystemTime::UNIX_EPOCH)?.as_secs() as i64;
-        let count = self.conn.execute(
-            "DELETE FROM nodes WHERE updated < ?1",
-            [before_secs],
-        )?;
-        Ok(count as usize)
+        let before_secs = i64::try_from(before.duration_since(SystemTime::UNIX_EPOCH)?.as_secs())
+            .unwrap_or(i64::MAX);
+        let count = self
+            .conn
+            .execute("DELETE FROM nodes WHERE updated < ?1", [before_secs])?;
+        Ok(count)
     }
 
     /// Get graph statistics
+    ///
+    /// # Errors
+    /// Returns an error if the database query fails
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn stats(&self) -> Result<GraphStats, ContextError> {
-        let node_count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM nodes",
-            [],
-            |row| row.get(0),
-        )?;
+        let node_count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get(0))?;
 
-        let edge_count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM edges",
-            [],
-            |row| row.get(0),
-        )?;
+        let edge_count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))?;
 
         Ok(GraphStats {
             node_count: node_count as usize,
