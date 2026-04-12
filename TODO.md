@@ -39,12 +39,12 @@
 ## Phase 1 — Core Shell (`v0.1.0`)
 
 ### 1.1 Lexer (`modsh-core`)
-- [ ] Define token types (Word, Operator, Redirect, etc.)
-- [ ] Implement tokenizer for POSIX sh syntax
-- [ ] Handle quoting (`'`, `"`, `\`)
-- [ ] Handle heredoc tokens
-- [ ] Handle comment stripping
-- [ ] Unit tests — token stream correctness
+- [x] Define token types (Word, Operator, Redirect, etc.)
+- [x] Implement tokenizer for POSIX sh syntax
+- [x] Handle quoting (`'`, `"`, `\`)
+- [~] Handle heredoc tokens — delimiter parsed, body reading TODO
+- [x] Handle comment stripping
+- [~] Unit tests — token stream correctness — basic tests done, need more edge cases
 - [ ] Fuzz testing — malformed input safety
 
 ### 1.2 Parser
