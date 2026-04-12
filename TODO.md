@@ -45,7 +45,7 @@
 - [x] Handle heredoc tokens — delimiter and body reading done
 - [x] Handle comment stripping
 - [x] Unit tests — comprehensive edge cases covered (24 tests)
-- [ ] Fuzz testing — malformed input safety
+- [x] Fuzz testing — cargo-fuzz setup with lexer target (ran 37k+ iterations without crash)
 
 ### 1.2 Parser
 - [~] Define AST node types
