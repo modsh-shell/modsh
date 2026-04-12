@@ -65,7 +65,7 @@
 
 ### 1.3 Expander
 - [x] Parameter expansion — all POSIX operators: $VAR, ${VAR}, ${VAR:-default}, ${VAR:=assign}, ${VAR:?err}, ${VAR:+alt}, plus colon variants (treats empty as unset)
-- [ ] Command substitution (`$(cmd)`, backticks)
+- [x] Command substitution (`$(cmd)`, `` `cmd` ``)
 - [ ] Arithmetic expansion (`$((expr))`)
 - [ ] Word splitting — returns Vec but no splitting yet
 - [ ] Glob/pathname expansion

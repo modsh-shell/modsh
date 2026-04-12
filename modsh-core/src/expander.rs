@@ -98,44 +98,135 @@ impl<'a> Expander<'a> {
         let mut chars = word.chars().peekable();
 
         while let Some(ch) = chars.next() {
-            if ch == '$' {
-                // Parameter expansion
-                match chars.peek() {
-                    Some('{') => {
-                        chars.next(); // consume {
-                        let name = Self::read_braced_name(&mut chars)?;
-                        let value = self.expand_braced(&name)?;
-                        result.push_str(&value);
-                    }
-                    Some(&c) if c.is_alphabetic() || c == '_' => {
-                        let name = Self::read_name(&mut chars);
-                        let value = self.env.get(&name).unwrap_or_default();
-                        result.push_str(value);
-                    }
-                    Some(&c)
-                        if c.is_ascii_digit()
-                            || c == '@'
-                            || c == '*'
-                            || c == '#'
-                            || c == '?'
-                            || c == '-'
-                            || c == '$'
-                            || c == '!' =>
-                    {
-                        chars.next(); // consume special var
-                        let value = Self::expand_special(c);
-                        result.push_str(&value);
-                    }
-                    _ => {
-                        result.push('$');
+            match ch {
+                '$' => {
+                    // Parameter expansion or command substitution $(...)
+                    match chars.peek() {
+                        Some('{') => {
+                            chars.next(); // consume {
+                            let name = Self::read_braced_name(&mut chars)?;
+                            let value = self.expand_braced(&name)?;
+                            result.push_str(&value);
+                        }
+                        Some(&'(') => {
+                            chars.next(); // consume (
+                            let cmd = Self::read_command_substitution(&mut chars, ')')?;
+                            let output = self.execute_command_substitution(&cmd)?;
+                            result.push_str(&output);
+                        }
+                        Some(&c) if c.is_alphabetic() || c == '_' => {
+                            let name = Self::read_name(&mut chars);
+                            let value = self.env.get(&name).unwrap_or_default();
+                            result.push_str(value);
+                        }
+                        Some(&c)
+                            if c.is_ascii_digit()
+                                || c == '@'
+                                || c == '*'
+                                || c == '#'
+                                || c == '?'
+                                || c == '-'
+                                || c == '$'
+                                || c == '!' =>
+                        {
+                            chars.next(); // consume special var
+                            let value = Self::expand_special(c);
+                            result.push_str(&value);
+                        }
+                        _ => {
+                            result.push('$');
+                        }
                     }
                 }
-            } else {
-                result.push(ch);
+                '`' => {
+                    // Backtick command substitution
+                    let cmd = Self::read_command_substitution(&mut chars, '`')?;
+                    let output = self.execute_command_substitution(&cmd)?;
+                    result.push_str(&output);
+                }
+                _ => {
+                    result.push(ch);
+                }
             }
         }
 
         Ok(result)
+    }
+
+    /// Read command substitution content until terminator (parentheses for $(...), backtick for `...`)
+    fn read_command_substitution(
+        chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+        terminator: char,
+    ) -> Result<String, ExpandError> {
+        let mut cmd = String::new();
+        let mut depth = 1; // Track nesting for parentheses
+
+        while let Some(&ch) = chars.peek() {
+            chars.next();
+
+            if terminator == ')' {
+                // For $(...), handle nested parentheses
+                if ch == '(' {
+                    depth += 1;
+                    cmd.push(ch);
+                } else if ch == ')' {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(cmd);
+                    }
+                    cmd.push(ch);
+                } else {
+                    cmd.push(ch);
+                }
+            } else if ch == terminator {
+                // For backticks, just find matching backtick
+                return Ok(cmd);
+            } else {
+                cmd.push(ch);
+            }
+        }
+
+        Err(ExpandError::CommandSubstitution(
+            "unterminated command substitution".to_string()
+        ))
+    }
+
+    /// Execute a command substitution and return its output
+    fn execute_command_substitution(&self, cmd: &str) -> Result<String, ExpandError> {
+        // For now, use a simple approach with std::process::Command
+        // This runs the command through the system shell
+        // TODO: In the future, integrate with our own parser/executor for proper execution
+        
+        use std::process::{Command, Stdio};
+        
+        let output = if cfg!(target_os = "windows") {
+            Command::new("cmd")
+                .args(["/C", cmd])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+        } else {
+            Command::new("sh")
+                .args(["-c", cmd])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+        }
+        .map_err(|e| ExpandError::CommandSubstitution(e.to_string()))?;
+
+        if !output.status.success() {
+            // POSIX: Failed command substitution doesn't necessarily fail expansion
+            // The stderr is preserved but expansion uses stdout (which may be empty)
+        }
+
+        let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        
+        // POSIX: Strip trailing newlines from command output
+        while stdout.ends_with('\n') {
+            stdout.pop();
+        }
+        
+        Ok(stdout)
     }
 
     fn read_braced_name(
@@ -305,6 +396,36 @@ impl<'a> Expander<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_expand_command_substitution_dollar_paren() {
+        let mut env = Environment::new();
+        let mut expander = Expander::new(&mut env);
+        
+        // Test simple echo
+        let result = expander.expand("$(echo hello)").unwrap();
+        assert_eq!(result, vec!["hello"]);
+    }
+
+    #[test]
+    fn test_expand_command_substitution_backtick() {
+        let mut env = Environment::new();
+        let mut expander = Expander::new(&mut env);
+        
+        // Test simple echo with backticks
+        let result = expander.expand("`echo world`").unwrap();
+        assert_eq!(result, vec!["world"]);
+    }
+
+    #[test]
+    fn test_expand_command_substitution_in_word() {
+        let mut env = Environment::new();
+        let mut expander = Expander::new(&mut env);
+        
+        // Command substitution embedded in a word
+        let result = expander.expand("prefix-$(echo middle)-suffix").unwrap();
+        assert_eq!(result, vec!["prefix-middle-suffix"]);
+    }
 
     #[test]
     fn test_expand_simple_variable() {
