@@ -22,7 +22,7 @@ toml = "1.1"
 clap = { version = "4.4", features = ["derive"] }
 
 # Terminal/crossterm
-crossterm = "0.27"
+crossterm = "0.29"
 
 # SQLite for context graph
 rusqlite = { version = "0.39", features = ["bundled"] }
