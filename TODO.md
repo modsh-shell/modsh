@@ -92,10 +92,10 @@
 - [ ] `trap`
 
 ### 1.6 Job Control
-- [ ] Foreground/background execution (`&`)
-- [ ] `jobs`, `fg`, `bg`
-- [ ] SIGINT, SIGTERM, SIGCHLD, SIGHUP handling
-- [ ] Process group management
+- [~] Foreground/background execution — data structures done, need fork/signals
+- [~] `jobs`, `fg`, `bg` — stubs exist, need terminal control
+- [ ] Signal handling — SIGINT, SIGTSTP, SIGCHLD, SIGHUP
+- [ ] Process group management — need setpgid, tcsetpgrp
 
 ### 1.7 POSIX Compliance
 - [ ] Run against POSIX sh test suite
