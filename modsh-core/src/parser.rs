@@ -49,6 +49,17 @@ pub enum Command {
     While(WhileLoop),
     /// Case statement: case word in patterns) cmds;; esac
     Case(CaseStatement),
+    /// Function definition: name() { body; } or function name { body; }
+    Function(FunctionDefinition),
+}
+
+/// Function definition
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionDefinition {
+    /// Function name
+    pub name: String,
+    /// Function body (typically a group or compound command)
+    pub body: Box<Command>,
 }
 
 /// If clause with optional elif/else
@@ -316,14 +327,20 @@ impl Parser {
                 Ok(Command::Group(Box::new(cmd)))
             }
             Token::Word(w) => {
+                let word = w.clone(); // Clone to avoid borrow issues
                 // Check for compound command keywords (they take priority over terminators)
-                match w.as_str() {
+                match word.as_str() {
                     "if" => self.parse_if(),
                     "for" => self.parse_for(),
                     "while" => self.parse_while(),
                     "case" => self.parse_case(),
+                    "function" => self.parse_function(),
                     _ => {
-                        if terminators.contains(&w.as_str()) {
+                        // Check for function definition: name() { ... }
+                        if let Some(func) = self.try_parse_function_def(&word, terminators)? {
+                            return Ok(func);
+                        }
+                        if terminators.contains(&word.as_str()) {
                             Err(ParseError::Unexpected(self.peek().clone()))
                         } else {
                             self.parse_simple_command()
@@ -454,6 +471,82 @@ impl Parser {
         }
 
         Ok(Command::Case(CaseStatement { word, clauses }))
+    }
+
+    /// Parse function definition: function name { body; } or function name() { body; }
+    fn parse_function(&mut self) -> Result<Command, ParseError> {
+        self.expect_word("function")?;
+        let name = self.expect_word_value()?;
+
+        // Optional () after function name (bash style)
+        if matches!(self.peek(), Token::Operator(Operator::LParen)) {
+            self.advance();
+            self.expect_operator(Operator::RParen)?;
+        }
+
+        let body = self.parse_function_body()?;
+        Ok(Command::Function(FunctionDefinition { name, body }))
+    }
+
+    /// Try to parse function definition: name() { body; }
+    /// Returns Ok(Some(func)) if it's a function def, Ok(None) if not
+    fn try_parse_function_def(
+        &mut self,
+        name: &str,
+        _terminators: &[&str],
+    ) -> Result<Option<Command>, ParseError> {
+        // Look ahead: next tokens should be () for function definition
+        if !matches!(self.peek_next(), Token::Operator(Operator::LParen)) {
+            return Ok(None);
+        }
+
+        // Check that name is not a reserved word
+        let reserved = ["if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac", "in"];
+        if reserved.contains(&name) {
+            return Ok(None);
+        }
+
+        // It's a function definition!
+        self.advance(); // consume name
+        self.advance(); // consume (
+        self.expect_operator(Operator::RParen)?;
+
+        let body = self.parse_function_body()?;
+        Ok(Some(Command::Function(FunctionDefinition {
+            name: name.to_string(),
+            body,
+        })))
+    }
+
+    /// Parse function body (group command or any compound command)
+    fn parse_function_body(&mut self) -> Result<Box<Command>, ParseError> {
+        // Function body must be a compound command
+        match self.peek() {
+            Token::Operator(Operator::LBrace) => {
+                // { commands; } form
+                self.advance();
+                let body = Box::new(self.parse_list_until(&["}"])?);
+                self.expect_operator(Operator::RBrace)?;
+                Ok(body)
+            }
+            Token::Word(w) => {
+                match w.as_str() {
+                    "if" => Ok(Box::new(self.parse_if()?)),
+                    "for" => Ok(Box::new(self.parse_for()?)),
+                    "while" => Ok(Box::new(self.parse_while()?)),
+                    "case" => Ok(Box::new(self.parse_case()?)),
+                    "function" => Ok(Box::new(self.parse_function()?)),
+                    _ => Err(ParseError::Expected {
+                        expected: "function body".to_string(),
+                        got: self.peek().clone(),
+                    }),
+                }
+            }
+            _ => Err(ParseError::Expected {
+                expected: "function body".to_string(),
+                got: self.peek().clone(),
+            }),
+        }
     }
 
     /// Expect case clause terminator (;; or just ; before esac)
@@ -777,6 +870,55 @@ mod tests {
                 assert!(matches!(*inner, Command::List(..)));
             }
             _ => panic!("Expected group"),
+        }
+    }
+
+    #[test]
+    fn test_function_def_posix() {
+        let cmd = parse("foo() { echo hello; }").unwrap();
+        match cmd {
+            Command::Function(func) => {
+                assert_eq!(func.name, "foo");
+                // Body is the command inside { }, which is a Simple command for "echo hello"
+                assert!(matches!(*func.body, Command::Simple(..)));
+            }
+            _ => panic!("Expected function definition, got {:?}", cmd),
+        }
+    }
+
+    #[test]
+    fn test_function_def_bash() {
+        let cmd = parse("function foo { echo hello; }").unwrap();
+        match cmd {
+            Command::Function(func) => {
+                assert_eq!(func.name, "foo");
+                assert!(matches!(*func.body, Command::Simple(..)));
+            }
+            _ => panic!("Expected function definition"),
+        }
+    }
+
+    #[test]
+    fn test_function_def_bash_with_parens() {
+        let cmd = parse("function foo() { echo hello; }").unwrap();
+        match cmd {
+            Command::Function(func) => {
+                assert_eq!(func.name, "foo");
+                assert!(matches!(*func.body, Command::Simple(..)));
+            }
+            _ => panic!("Expected function definition"),
+        }
+    }
+
+    #[test]
+    fn test_function_def_compound_body() {
+        let cmd = parse("foo() { if true; then echo yes; fi; }").unwrap();
+        match cmd {
+            Command::Function(func) => {
+                assert_eq!(func.name, "foo");
+                assert!(matches!(*func.body, Command::If(..)));
+            }
+            _ => panic!("Expected function with if body"),
         }
     }
 }

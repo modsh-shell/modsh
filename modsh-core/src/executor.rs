@@ -121,6 +121,7 @@ impl Executor {
             Command::For(for_loop) => self.execute_for(for_loop),
             Command::While(while_loop) => self.execute_while(while_loop),
             Command::Case(case_stmt) => self.execute_case(case_stmt),
+            Command::Function(func_def) => self.execute_function_def(func_def),
         }
     }
 
@@ -181,6 +182,12 @@ impl Executor {
             // TODO: Break after first match (or continue for ;&)
         }
         Ok(last_status)
+    }
+
+    fn execute_function_def(&mut self, func_def: &crate::parser::FunctionDefinition) -> Result<ExitStatus, ExecError> {
+        // TODO: Register function in environment
+        // For now, just execute the body immediately (not correct behavior)
+        self.execute(&func_def.body)
     }
 
     fn execute_simple(&mut self, cmd: &SimpleCommand) -> Result<ExitStatus, ExecError> {
