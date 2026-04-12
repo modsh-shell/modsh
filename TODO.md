@@ -61,7 +61,7 @@
   - [x] FunctionDefinition — POSIX (name() { }) and bash (function name { }) forms
 - [x] Implement recursive descent parser
 - [x] Error recovery — parse_partial() with is_incomplete detection, 14 tests
-- [~] Unit tests — basic tests done, need comprehensive POSIX grammar tests
+- [x] Unit tests — 53 parser tests covering POSIX grammar comprehensively
 
 ### 1.3 Expander
 - [~] Parameter expansion (`$VAR`, `${VAR:-default}`, etc.) — basic done, ${VAR:=...} TODO
