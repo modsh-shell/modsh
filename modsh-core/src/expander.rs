@@ -89,8 +89,46 @@ impl<'a> Expander<'a> {
         let expanded = self.expand_parameters(word)?;
         let expanded = Self::expand_tilde(&expanded);
 
-        // For now, just return as single word (no word splitting)
-        Ok(vec![expanded])
+        // Word splitting based on IFS
+        let ifs = self.env.get("IFS").unwrap_or(" \t\n");
+        let words = Self::split_words(&expanded, ifs);
+        Ok(words)
+    }
+
+    /// Split a string into words based on IFS (Internal Field Separator)
+    fn split_words(s: &str, ifs: &str) -> Vec<String> {
+        if ifs.is_empty() {
+            // Empty IFS means no splitting
+            return vec![s.to_string()];
+        }
+
+        // Empty string expands to a single empty word
+        if s.is_empty() {
+            return vec![String::new()];
+        }
+
+        let mut words = Vec::new();
+        let mut current = String::new();
+
+        for ch in s.chars() {
+            if ifs.contains(ch) {
+                // IFS character - end current word if any
+                if !current.is_empty() {
+                    words.push(current);
+                    current = String::new();
+                }
+            } else {
+                // Non-IFS character
+                current.push(ch);
+            }
+        }
+
+        // Don't forget the last word
+        if !current.is_empty() {
+            words.push(current);
+        }
+
+        words
     }
 
     fn expand_parameters(&mut self, word: &str) -> Result<String, ExpandError> {
@@ -853,7 +891,8 @@ mod tests {
 
         let mut expander = Expander::new(&mut env);
         let result = expander.expand("Hello, $USER!").unwrap();
-        assert_eq!(result, vec!["Hello, alice!"]);
+        // Word splitting splits on space: "Hello," and "alice!"
+        assert_eq!(result, vec!["Hello,", "alice!"]);
     }
 
     #[test]
@@ -867,5 +906,60 @@ mod tests {
         assert_eq!(result, vec!["default"]);
         // FOO should still be empty (not set to default)
         assert_eq!(env.get("FOO"), Some(""));
+    }
+
+    #[test]
+    fn test_word_splitting_basic() {
+        let mut env = Environment::new();
+        env.set("WORDS".to_string(), "hello world foo".to_string());
+
+        let mut expander = Expander::new(&mut env);
+        let result = expander.expand("$WORDS").unwrap();
+        assert_eq!(result, vec!["hello", "world", "foo"]);
+    }
+
+    #[test]
+    fn test_word_splitting_multiple_spaces() {
+        let mut env = Environment::new();
+        env.set("WORDS".to_string(), "a  b    c".to_string());
+
+        let mut expander = Expander::new(&mut env);
+        let result = expander.expand("$WORDS").unwrap();
+        // Multiple spaces treated as single separator
+        assert_eq!(result, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_word_splitting_with_tabs() {
+        let mut env = Environment::new();
+        env.set("WORDS".to_string(), "x\ty\tz".to_string());
+
+        let mut expander = Expander::new(&mut env);
+        let result = expander.expand("$WORDS").unwrap();
+        // Tabs are also IFS characters
+        assert_eq!(result, vec!["x", "y", "z"]);
+    }
+
+    #[test]
+    fn test_word_splitting_empty_ifs() {
+        let mut env = Environment::new();
+        env.set("IFS".to_string(), "".to_string());
+        env.set("WORDS".to_string(), "hello world".to_string());
+
+        let mut expander = Expander::new(&mut env);
+        let result = expander.expand("$WORDS").unwrap();
+        // Empty IFS means no splitting
+        assert_eq!(result, vec!["hello world"]);
+    }
+
+    #[test]
+    fn test_word_splitting_custom_ifs() {
+        let mut env = Environment::new();
+        env.set("IFS".to_string(), ":".to_string());
+        env.set("PATH_VAR".to_string(), "/usr/bin:/bin:/usr/local/bin".to_string());
+
+        let mut expander = Expander::new(&mut env);
+        let result = expander.expand("$PATH_VAR").unwrap();
+        assert_eq!(result, vec!["/usr/bin", "/bin", "/usr/local/bin"]);
     }
 }

@@ -67,7 +67,7 @@
 - [x] Parameter expansion — all POSIX operators: $VAR, ${VAR}, ${VAR:-default}, ${VAR:=assign}, ${VAR:?err}, ${VAR:+alt}, plus colon variants (treats empty as unset)
 - [x] Command substitution (`$(cmd)`, `` `cmd` ``)
 - [x] Arithmetic expansion (`$((expr))`)
-- [ ] Word splitting — returns Vec but no splitting yet
+- [x] Word splitting — IFS-based, handles spaces/tabs/newlines, custom IFS, empty IFS (no split)
 - [ ] Glob/pathname expansion
 - [~] Tilde expansion — ~/ done, ~user/ TODO
 - [~] Unit tests — basic tests done, need edge cases
