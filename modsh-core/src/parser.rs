@@ -4,7 +4,7 @@ use crate::lexer::{Operator, Token};
 use thiserror::Error;
 
 /// Errors that can occur during parsing
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum ParseError {
     /// Unexpected token encountered
     #[error("unexpected token: {0:?}")]
@@ -20,6 +20,22 @@ pub enum ParseError {
         /// Actual token received
         got: Token,
     },
+    /// Unterminated string or heredoc
+    #[error("unterminated construct: {0}")]
+    Unterminated(String),
+}
+
+/// Result of parsing with partial input support
+#[derive(Debug, Clone)]
+pub struct ParseResult {
+    /// The command that was successfully parsed (if any)
+    pub command: Option<Command>,
+    /// Position in input where parsing stopped
+    pub position: usize,
+    /// Whether this looks like an incomplete command (more input expected)
+    pub is_incomplete: bool,
+    /// Error if parsing failed definitively
+    pub error: Option<ParseError>,
 }
 
 /// AST node types for POSIX shell commands
@@ -175,6 +191,114 @@ impl Parser {
         }
 
         Ok(cmd)
+    }
+
+    /// Parse input with error recovery, returning partial results for incomplete commands.
+    ///
+    /// This is useful for interactive shells where the user may not have finished
+    /// typing a complete command (e.g., waiting for a closing quote or keyword).
+    ///
+    /// # Examples
+    /// - `"echo hello` → incomplete (missing closing quote)
+    /// - `if true; then` → incomplete (missing `fi`)
+    /// - `echo hello |` → incomplete (waiting for next command)
+    /// - `(` → incomplete (missing closing `)`)
+    pub fn parse_partial(&mut self) -> ParseResult {
+        self.skip_comments();
+
+        if matches!(self.peek(), Token::Eof) {
+            return ParseResult {
+                command: None,
+                position: self.pos,
+                is_incomplete: false,
+                error: Some(ParseError::UnexpectedEof),
+            };
+        }
+
+        match self.try_parse_list() {
+            Ok(cmd) => {
+                let leftover = self.peek().clone();
+                if leftover != Token::Eof {
+                    ParseResult {
+                        command: Some(cmd),
+                        position: self.pos,
+                        is_incomplete: false,
+                        error: Some(ParseError::Unexpected(leftover)),
+                    }
+                } else {
+                    ParseResult {
+                        command: Some(cmd),
+                        position: self.pos,
+                        is_incomplete: false,
+                        error: None,
+                    }
+                }
+            }
+            Err(e) => {
+                let incomplete = self.is_incomplete_error(&e);
+                ParseResult {
+                    command: None,
+                    position: self.pos,
+                    is_incomplete: incomplete,
+                    error: Some(e),
+                }
+            }
+        }
+    }
+
+    /// Try to parse a list, returning error without consuming on failure
+    fn try_parse_list(&mut self) -> Result<Command, ParseError> {
+        self.parse_list()
+    }
+
+    /// Check if an error indicates incomplete input (waiting for more)
+    fn is_incomplete_error(&self, err: &ParseError) -> bool {
+        match err {
+            ParseError::UnexpectedEof => true,
+            ParseError::Expected { got, .. } => matches!(got, Token::Eof),
+            ParseError::Unexpected(Token::Eof) => true,
+            _ => {
+                // Check if we hit Eof while expecting compound command terminators
+                let eof_keywords = ["then", "else", "fi", "do", "done", "esac", "}"];
+                matches!(self.peek(), Token::Word(w) if eof_keywords.contains(&w.as_str()))
+                    || matches!(self.peek(), Token::Eof)
+            }
+        }
+    }
+
+    /// Check if we're at a position that looks like incomplete input
+    /// This is called by the driver to decide whether to prompt for more input
+    pub fn is_incomplete(&self) -> bool {
+        // Find the last meaningful token (not Eof, not Comment)
+        let mut last_token_idx = None;
+        for (idx, token) in self.tokens.iter().enumerate() {
+            match token {
+                Token::Eof => break,
+                Token::Comment(_) => continue,
+                _ => last_token_idx = Some(idx),
+            }
+        }
+
+        let Some(idx) = last_token_idx else {
+            return false; // Empty or comment-only is not incomplete
+        };
+
+        match &self.tokens[idx] {
+            // Operators that expect continuation
+            Token::Operator(Operator::Pipe)
+            | Token::Operator(Operator::And)
+            | Token::Operator(Operator::Or)
+            | Token::Operator(Operator::Background) => true,
+            // Opening brackets without closing
+            Token::Operator(Operator::LBrace)
+            | Token::Operator(Operator::LParen) => true,
+            // Compound command keywords that need closing
+            Token::Word(w) => matches!(
+                w.as_str(),
+                "if" | "while" | "for" | "case" | "function"
+            ),
+            _ => false,
+        }
     }
 
     /// Skip over comment tokens
@@ -920,5 +1044,128 @@ mod tests {
             }
             _ => panic!("Expected function with if body"),
         }
+    }
+
+    // ===== Error Recovery / Partial Parsing Tests =====
+
+    #[test]
+    fn test_partial_pipe_operator() {
+        // "echo hello |" should be incomplete (waiting for next command)
+        let tokens = crate::lexer::tokenize("echo hello |").unwrap();
+        let mut parser = Parser::new(tokens);
+        let result = parser.parse_partial();
+        assert!(result.is_incomplete);
+    }
+
+    #[test]
+    fn test_partial_and_operator() {
+        let tokens = crate::lexer::tokenize("echo hello &&").unwrap();
+        let mut parser = Parser::new(tokens);
+        let result = parser.parse_partial();
+        assert!(result.is_incomplete);
+    }
+
+    #[test]
+    fn test_partial_or_operator() {
+        let tokens = crate::lexer::tokenize("echo hello ||").unwrap();
+        let mut parser = Parser::new(tokens);
+        let result = parser.parse_partial();
+        assert!(result.is_incomplete);
+    }
+
+    #[test]
+    fn test_partial_if_missing_then() {
+        let tokens = crate::lexer::tokenize("if true; then").unwrap();
+        let mut parser = Parser::new(tokens);
+        let result = parser.parse_partial();
+        assert!(result.is_incomplete);
+    }
+
+    #[test]
+    fn test_partial_if_missing_fi() {
+        let tokens = crate::lexer::tokenize("if true; then echo yes;").unwrap();
+        let mut parser = Parser::new(tokens);
+        let result = parser.parse_partial();
+        assert!(result.is_incomplete);
+    }
+
+    #[test]
+    fn test_partial_for_missing_done() {
+        let tokens = crate::lexer::tokenize("for i in a b; do echo $i;").unwrap();
+        let mut parser = Parser::new(tokens);
+        let result = parser.parse_partial();
+        assert!(result.is_incomplete);
+    }
+
+    #[test]
+    fn test_partial_while_missing_done() {
+        let tokens = crate::lexer::tokenize("while true; do echo loop;").unwrap();
+        let mut parser = Parser::new(tokens);
+        let result = parser.parse_partial();
+        assert!(result.is_incomplete);
+    }
+
+    #[test]
+    fn test_partial_subshell_missing_paren() {
+        let tokens = crate::lexer::tokenize("(echo hello").unwrap();
+        let mut parser = Parser::new(tokens);
+        let result = parser.parse_partial();
+        assert!(result.is_incomplete);
+    }
+
+    #[test]
+    fn test_partial_group_missing_brace() {
+        let tokens = crate::lexer::tokenize("{ echo hello;").unwrap();
+        let mut parser = Parser::new(tokens);
+        let result = parser.parse_partial();
+        assert!(result.is_incomplete);
+    }
+
+    #[test]
+    fn test_partial_complete_command_not_incomplete() {
+        // A complete command should not be marked incomplete
+        let tokens = crate::lexer::tokenize("echo hello").unwrap();
+        let mut parser = Parser::new(tokens);
+        let result = parser.parse_partial();
+        assert!(!result.is_incomplete);
+        assert!(result.command.is_some());
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn test_partial_complete_pipeline_not_incomplete() {
+        let tokens = crate::lexer::tokenize("echo hello | cat").unwrap();
+        let mut parser = Parser::new(tokens);
+        let result = parser.parse_partial();
+        assert!(!result.is_incomplete);
+        assert!(result.command.is_some());
+    }
+
+    #[test]
+    fn test_is_incomplete_checks() {
+        // Empty input is not incomplete
+        let tokens = crate::lexer::tokenize("").unwrap();
+        let parser = Parser::new(tokens);
+        assert!(!parser.is_incomplete());
+
+        // Comment-only input is not incomplete
+        let tokens = crate::lexer::tokenize("# just a comment").unwrap();
+        let parser = Parser::new(tokens);
+        assert!(!parser.is_incomplete());
+
+        // Trailing pipe is incomplete
+        let tokens = crate::lexer::tokenize("echo |").unwrap();
+        let parser = Parser::new(tokens);
+        assert!(parser.is_incomplete());
+
+        // Opening paren without closing
+        let tokens = crate::lexer::tokenize("(").unwrap();
+        let parser = Parser::new(tokens);
+        assert!(parser.is_incomplete());
+
+        // Opening brace without closing
+        let tokens = crate::lexer::tokenize("{").unwrap();
+        let parser = Parser::new(tokens);
+        assert!(parser.is_incomplete());
     }
 }
