@@ -64,7 +64,7 @@
 - [x] Unit tests — 53 parser tests covering POSIX grammar comprehensively
 
 ### 1.3 Expander
-- [~] Parameter expansion (`$VAR`, `${VAR:-default}`, etc.) — basic done, ${VAR:=...} TODO
+- [x] Parameter expansion — all POSIX operators: $VAR, ${VAR}, ${VAR:-default}, ${VAR:=assign}, ${VAR:?err}, ${VAR:+alt}, plus colon variants (treats empty as unset)
 - [ ] Command substitution (`$(cmd)`, backticks)
 - [ ] Arithmetic expansion (`$((expr))`)
 - [ ] Word splitting — returns Vec but no splitting yet
