@@ -96,13 +96,35 @@ impl Parser {
     /// Parse the entire input into a command AST
     ///
     /// # Errors
-    /// Returns an error if the token stream contains unexpected tokens
+    /// Returns an error if the token stream contains unexpected tokens or if
+    /// there are leftover tokens after parsing a valid command
     pub fn parse(&mut self) -> Result<Command, ParseError> {
-        self.parse_list()
+        // Handle empty or comment-only input
+        self.skip_comments();
+        if matches!(self.peek(), Token::Eof) {
+            return Err(ParseError::UnexpectedEof);
+        }
+
+        let cmd = self.parse_list()?;
+
+        // Check for leftover tokens
+        self.skip_comments();
+        if !matches!(self.peek(), Token::Eof) {
+            return Err(ParseError::Unexpected(self.peek().clone()));
+        }
+
+        Ok(cmd)
+    }
+
+    /// Skip over comment tokens
+    fn skip_comments(&mut self) {
+        while matches!(self.peek(), Token::Comment(_)) {
+            self.advance();
+        }
     }
 
     fn parse_list(&mut self) -> Result<Command, ParseError> {
-        let left = self.parse_pipeline()?;
+        let left = self.parse_and_or()?;
 
         match self.peek() {
             Token::Operator(Operator::Semicolon) => {
@@ -112,20 +134,42 @@ impl Parser {
             }
             Token::Operator(Operator::Background) => {
                 self.advance();
-                Ok(Command::Background(Box::new(left)))
-            }
-            Token::Operator(Operator::And) => {
-                self.advance();
-                let right = self.parse_list()?;
-                Ok(Command::And(Box::new(left), Box::new(right)))
-            }
-            Token::Operator(Operator::Or) => {
-                self.advance();
-                let right = self.parse_list()?;
-                Ok(Command::Or(Box::new(left), Box::new(right)))
+                // Background binds tighter than ; but check for more list after &
+                let bg_cmd = Command::Background(Box::new(left));
+                match self.peek() {
+                    Token::Operator(Operator::Semicolon) => {
+                        self.advance();
+                        let right = self.parse_list()?;
+                        Ok(Command::List(Box::new(bg_cmd), Box::new(right)))
+                    }
+                    _ => Ok(bg_cmd),
+                }
             }
             _ => Ok(left),
         }
+    }
+
+    /// Parse AND/OR lists with left-associativity
+    fn parse_and_or(&mut self) -> Result<Command, ParseError> {
+        let mut left = self.parse_pipeline()?;
+
+        loop {
+            match self.peek() {
+                Token::Operator(Operator::And) => {
+                    self.advance();
+                    let right = self.parse_pipeline()?;
+                    left = Command::And(Box::new(left), Box::new(right));
+                }
+                Token::Operator(Operator::Or) => {
+                    self.advance();
+                    let right = self.parse_pipeline()?;
+                    left = Command::Or(Box::new(left), Box::new(right));
+                }
+                _ => break,
+            }
+        }
+
+        Ok(left)
     }
 
     fn parse_pipeline(&mut self) -> Result<Command, ParseError> {
@@ -165,6 +209,7 @@ impl Parser {
         let mut cmd = SimpleCommand::default();
 
         loop {
+            self.skip_comments();
             match self.peek() {
                 Token::Word(w) => {
                     cmd.words.push(w.clone());
@@ -186,11 +231,12 @@ impl Parser {
         Ok(Command::Simple(cmd))
     }
 
-    fn convert_redirect(&self, r: crate::lexer::Redirect) -> Result<Redirect, ParseError> {
+    fn convert_redirect(&mut self, r: crate::lexer::Redirect) -> Result<Redirect, ParseError> {
         use crate::lexer::Redirect as LRedirect;
 
         // Check if we need to read a target word before moving `r`
-        let needs_target = !matches!(r, LRedirect::Heredoc { .. });
+        // Heredoc delimiter and Herestring word are already embedded in the token
+        let needs_target = !matches!(r, LRedirect::Heredoc { .. } | LRedirect::Herestring { .. });
 
         let (fd, kind, target) = match r {
             LRedirect::Input { fd } => (fd, RedirectKind::Input, String::new()),
@@ -202,15 +248,21 @@ impl Parser {
         };
 
         if needs_target {
-            match self.peek_next() {
-                Token::Word(t) => Ok(Redirect {
-                    fd,
-                    kind,
-                    target: t.clone(),
-                }),
+            // Clone the token to avoid borrow issues
+            let next_token = self.peek_next().clone();
+            match next_token {
+                Token::Word(t) => {
+                    // Advance past the target word so it's not consumed as argument
+                    self.advance();
+                    Ok(Redirect {
+                        fd,
+                        kind,
+                        target: t,
+                    })
+                }
                 _ => Err(ParseError::Expected {
                     expected: "redirect target".to_string(),
-                    got: self.peek_next().clone(),
+                    got: next_token,
                 }),
             }
         } else {
