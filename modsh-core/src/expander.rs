@@ -87,7 +87,7 @@ impl<'a> Expander<'a> {
         // 6. Glob/pathname expansion
 
         let expanded = self.expand_parameters(word)?;
-        let home = self.env.get("HOME").map(|h| h.to_string());
+        let home = self.env.get("HOME").map(std::string::ToString::to_string);
         let expanded = Self::expand_tilde(&expanded, home.as_deref());
 
         // Word splitting based on IFS
@@ -189,7 +189,7 @@ impl<'a> Expander<'a> {
                         }
                         Some(&'(') => {
                             chars.next(); // consume (
-                            // Check for arithmetic expansion $((...))
+                                          // Check for arithmetic expansion $((...))
                             if chars.peek() == Some(&'(') {
                                 chars.next(); // consume second (
                                 let expr = Self::read_arithmetic_expression(&mut chars)?;
@@ -272,7 +272,7 @@ impl<'a> Expander<'a> {
         }
 
         Err(ExpandError::ArithmeticError(
-            "unterminated arithmetic expression".to_string()
+            "unterminated arithmetic expression".to_string(),
         ))
     }
 
@@ -301,7 +301,7 @@ impl<'a> Expander<'a> {
         }
 
         Err(ExpandError::CommandSubstitution(
-            "unterminated command substitution".to_string()
+            "unterminated command substitution".to_string(),
         ))
     }
 
@@ -322,7 +322,7 @@ impl<'a> Expander<'a> {
         }
 
         Err(ExpandError::CommandSubstitution(
-            "unterminated command substitution".to_string()
+            "unterminated command substitution".to_string(),
         ))
     }
 
@@ -350,7 +350,11 @@ impl<'a> Expander<'a> {
                 Some(&op) if op == '+' || op == '-' => {
                     chars.next();
                     let right = self.parse_arithmetic_term(chars)?;
-                    left = if op == '+' { left + right } else { left - right };
+                    left = if op == '+' {
+                        left + right
+                    } else {
+                        left - right
+                    };
                 }
                 _ => break,
             }
@@ -380,13 +384,17 @@ impl<'a> Expander<'a> {
                         '*' => left * right,
                         '/' => {
                             if right == 0 {
-                                return Err(ExpandError::ArithmeticError("division by zero".to_string()));
+                                return Err(ExpandError::ArithmeticError(
+                                    "division by zero".to_string(),
+                                ));
                             }
                             left / right
                         }
                         '%' => {
                             if right == 0 {
-                                return Err(ExpandError::ArithmeticError("modulo by zero".to_string()));
+                                return Err(ExpandError::ArithmeticError(
+                                    "modulo by zero".to_string(),
+                                ));
                             }
                             left % right
                         }
@@ -454,12 +462,12 @@ impl<'a> Expander<'a> {
                 }
                 // Look up variable and parse as number
                 let value_str = self.env.get(&name).unwrap_or("0");
-                value_str
-                    .parse::<i64>()
-                    .map_err(|_| ExpandError::ArithmeticError(format!("invalid number: {value_str}")))
+                value_str.parse::<i64>().map_err(|_| {
+                    ExpandError::ArithmeticError(format!("invalid number: {value_str}"))
+                })
             }
             _ => Err(ExpandError::ArithmeticError(
-                "unexpected character in arithmetic expression".to_string()
+                "unexpected character in arithmetic expression".to_string(),
             )),
         }
     }
@@ -469,9 +477,9 @@ impl<'a> Expander<'a> {
         // For now, use a simple approach with std::process::Command
         // This runs the command through the system shell
         // TODO: In the future, integrate with our own parser/executor for proper execution
-        
+
         use std::process::{Command, Stdio};
-        
+
         let output = if cfg!(target_os = "windows") {
             Command::new("cmd")
                 .args(["/C", cmd])
@@ -493,12 +501,12 @@ impl<'a> Expander<'a> {
         }
 
         let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        
+
         // POSIX: Strip trailing newlines from command output
         while stdout.ends_with('\n') {
             stdout.pop();
         }
-        
+
         Ok(stdout)
     }
 
@@ -566,13 +574,11 @@ impl<'a> Expander<'a> {
                     let msg = &suffix[1..];
                     let is_unset_or_empty = self.env.get(var_name).map_or(true, str::is_empty);
                     if is_unset_or_empty {
-                        Err(ExpandError::InvalidParameter(
-                            if msg.is_empty() {
-                                format!("{var_name}: parameter not set")
-                            } else {
-                                msg.to_string()
-                            }
-                        ))
+                        Err(ExpandError::InvalidParameter(if msg.is_empty() {
+                            format!("{var_name}: parameter not set")
+                        } else {
+                            msg.to_string()
+                        }))
                     } else {
                         Ok(self.env.get(var_name).unwrap().to_string())
                     }
@@ -621,13 +627,11 @@ impl<'a> Expander<'a> {
             // Non-colon :? errors only if truly unset
             let msg = suffix;
             if self.env.get(var_name).is_none() {
-                Err(ExpandError::InvalidParameter(
-                    if msg.is_empty() {
-                        format!("{var_name}: parameter not set")
-                    } else {
-                        msg.to_string()
-                    }
-                ))
+                Err(ExpandError::InvalidParameter(if msg.is_empty() {
+                    format!("{var_name}: parameter not set")
+                } else {
+                    msg.to_string()
+                }))
             } else {
                 Ok(self.env.get(var_name).unwrap().to_string())
             }
@@ -656,16 +660,15 @@ impl<'a> Expander<'a> {
     fn expand_tilde(word: &str, env_home: Option<&str>) -> String {
         if word == "~" {
             // Just ~ - expand to home directory
-            env_home.map_or_else(|| word.to_string(), |h| h.to_string())
+            env_home.map_or_else(|| word.to_string(), std::string::ToString::to_string)
         } else if word.starts_with("~/") {
             // ~/path - expand to home + path
             let home = env_home.unwrap_or("");
             home.to_string() + &word[1..]
-        } else if word.starts_with('~') {
+        } else if let Some(rest) = word.strip_prefix('~') {
             // ~username expansion
             #[cfg(unix)]
             {
-                let rest = &word[1..];
                 if let Some(slash_pos) = rest.find('/') {
                     let username = &rest[..slash_pos];
                     let path_suffix = &rest[slash_pos..];
@@ -691,8 +694,8 @@ impl<'a> Expander<'a> {
     #[cfg(unix)]
     #[cfg_attr(not(unix), allow(dead_code))]
     fn get_user_home(username: &str) -> Option<String> {
+        use libc::getpwnam;
         use std::ffi::{CStr, CString};
-        use libc::{getpwnam, passwd};
 
         let c_username = CString::new(username).ok()?;
         let pw = unsafe { getpwnam(c_username.as_ptr()) };
@@ -718,7 +721,7 @@ mod tests {
     fn test_expand_command_substitution_dollar_paren() {
         let mut env = Environment::new();
         let mut expander = Expander::new(&mut env);
-        
+
         // Test simple echo
         let result = expander.expand("$(echo hello)").unwrap();
         assert_eq!(result, vec!["hello"]);
@@ -728,7 +731,7 @@ mod tests {
     fn test_expand_command_substitution_backtick() {
         let mut env = Environment::new();
         let mut expander = Expander::new(&mut env);
-        
+
         // Test simple echo with backticks
         let result = expander.expand("`echo world`").unwrap();
         assert_eq!(result, vec!["world"]);
@@ -738,7 +741,7 @@ mod tests {
     fn test_expand_command_substitution_in_word() {
         let mut env = Environment::new();
         let mut expander = Expander::new(&mut env);
-        
+
         // Command substitution embedded in a word
         let result = expander.expand("prefix-$(echo middle)-suffix").unwrap();
         assert_eq!(result, vec!["prefix-middle-suffix"]);
@@ -748,7 +751,7 @@ mod tests {
     fn test_expand_arithmetic_simple() {
         let mut env = Environment::new();
         let mut expander = Expander::new(&mut env);
-        
+
         // Basic arithmetic
         assert_eq!(expander.expand("$((1 + 2))").unwrap(), vec!["3"]);
         assert_eq!(expander.expand("$((10 - 3))").unwrap(), vec!["7"]);
@@ -761,7 +764,7 @@ mod tests {
     fn test_expand_arithmetic_complex() {
         let mut env = Environment::new();
         let mut expander = Expander::new(&mut env);
-        
+
         // Complex expressions with parentheses
         assert_eq!(expander.expand("$((2 + 3 * 4))").unwrap(), vec!["14"]); // Precedence
         assert_eq!(expander.expand("$(((2 + 3) * 4))").unwrap(), vec!["20"]); // Parentheses
@@ -774,9 +777,9 @@ mod tests {
         let mut env = Environment::new();
         env.set("X".to_string(), "10".to_string());
         env.set("Y".to_string(), "3".to_string());
-        
+
         let mut expander = Expander::new(&mut env);
-        
+
         // Variables in arithmetic
         assert_eq!(expander.expand("$((X + Y))").unwrap(), vec!["13"]);
         assert_eq!(expander.expand("$((X * 2))").unwrap(), vec!["20"]);
@@ -786,7 +789,7 @@ mod tests {
     fn test_expand_arithmetic_in_word() {
         let mut env = Environment::new();
         let mut expander = Expander::new(&mut env);
-        
+
         // Arithmetic embedded in a word
         let result = expander.expand("count_$((5 + 1))_items").unwrap();
         assert_eq!(result, vec!["count_6_items"]);
@@ -1041,7 +1044,10 @@ mod tests {
     fn test_word_splitting_custom_ifs() {
         let mut env = Environment::new();
         env.set("IFS".to_string(), ":".to_string());
-        env.set("PATH_VAR".to_string(), "/usr/bin:/bin:/usr/local/bin".to_string());
+        env.set(
+            "PATH_VAR".to_string(),
+            "/usr/bin:/bin:/usr/local/bin".to_string(),
+        );
 
         let mut expander = Expander::new(&mut env);
         let result = expander.expand("$PATH_VAR").unwrap();
@@ -1053,7 +1059,7 @@ mod tests {
         // Test *.rs pattern - should match at least this file (expander.rs)
         let mut env = Environment::new();
         let mut expander = Expander::new(&mut env);
-        
+
         // Use src/*.rs which should exist
         let result = expander.expand("src/*.rs").unwrap();
         // Should match multiple .rs files in src/
@@ -1066,7 +1072,7 @@ mod tests {
         // Test ? pattern matches single char
         let mut env = Environment::new();
         let mut expander = Expander::new(&mut env);
-        
+
         // Test with Cargo.tom? which should match Cargo.toml
         let result = expander.expand("Cargo.tom?").unwrap();
         assert!(result.iter().any(|f| f == "Cargo.toml"));
@@ -1077,7 +1083,7 @@ mod tests {
         // When no files match, return the pattern itself (bash behavior)
         let mut env = Environment::new();
         let mut expander = Expander::new(&mut env);
-        
+
         let result = expander.expand("*.nonexistent_extension").unwrap();
         assert_eq!(result, vec!["*.nonexistent_extension"]);
     }
@@ -1087,7 +1093,7 @@ mod tests {
         // Plain filenames without glob chars pass through unchanged
         let mut env = Environment::new();
         let mut expander = Expander::new(&mut env);
-        
+
         let result = expander.expand("plain_file.txt").unwrap();
         assert_eq!(result, vec!["plain_file.txt"]);
     }
@@ -1097,7 +1103,7 @@ mod tests {
         // ~/ should expand to $HOME/
         let mut env = Environment::new();
         env.set("HOME".to_string(), "/home/testuser".to_string());
-        
+
         let mut expander = Expander::new(&mut env);
         let result = expander.expand("~/Documents").unwrap();
         assert_eq!(result, vec!["/home/testuser/Documents"]);
@@ -1108,7 +1114,7 @@ mod tests {
         // Just ~ should expand to $HOME
         let mut env = Environment::new();
         env.set("HOME".to_string(), "/home/testuser".to_string());
-        
+
         let mut expander = Expander::new(&mut env);
         let result = expander.expand("~").unwrap();
         assert_eq!(result, vec!["/home/testuser"]);
@@ -1119,10 +1125,10 @@ mod tests {
         // ~root should expand to root's home on Unix
         // This test may not work on all systems, so we check behavior
         let mut env = Environment::new();
-        
+
         let mut expander = Expander::new(&mut env);
         let result = expander.expand("~root").unwrap();
-        
+
         // On Unix, should expand to /root or similar
         // On non-Unix, should return as-is
         #[cfg(unix)]
@@ -1140,10 +1146,10 @@ mod tests {
     fn test_tilde_unknown_user() {
         // ~nonexistentuser should return as-is on Unix
         let mut env = Environment::new();
-        
+
         let mut expander = Expander::new(&mut env);
         let result = expander.expand("~nonexistentuserxyz").unwrap();
-        
+
         // Should return unchanged (user doesn't exist)
         assert_eq!(result, vec!["~nonexistentuserxyz"]);
     }
