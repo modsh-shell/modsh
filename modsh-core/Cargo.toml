@@ -12,6 +12,7 @@ description = "POSIX-compatible shell core for modsh"
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 glob = { workspace = true }
+tempfile = "3.27.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

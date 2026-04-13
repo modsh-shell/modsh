@@ -93,4 +93,8 @@ pub enum Redirect {
         /// File descriptor
         fd: Option<u32>,
     },
+    /// Output to both stdout and stderr: &>
+    OutputStdoutStderr,
+    /// Append to both stdout and stderr: &>>
+    AppendStdoutStderr,
 }

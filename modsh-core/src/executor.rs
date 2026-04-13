@@ -68,6 +68,8 @@ pub struct Executor {
     pub env: std::collections::HashMap<String, String>,
     /// Current working directory
     pub cwd: std::path::PathBuf,
+    /// Temporary files for heredocs/herestrings (kept alive until process starts)
+    temp_files: Vec<tempfile::NamedTempFile>,
 }
 
 impl Executor {
@@ -77,6 +79,7 @@ impl Executor {
         Self {
             env: std::env::vars().collect(),
             cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/")),
+            temp_files: Vec::new(),
         }
     }
 
@@ -200,23 +203,10 @@ impl Executor {
     }
 
     fn execute_simple(&mut self, cmd: &SimpleCommand) -> Result<ExitStatus, ExecError> {
-        if cmd.words.is_empty() {
-            // TODO: Handle redirects only
-            return Ok(ExitStatus::SUCCESS);
-        }
+        // Clear temporary files from previous command
+        self.temp_files.clear();
 
-        let program = &cmd.words[0];
-        let args: Vec<&str> = cmd.words[1..].iter().map(String::as_str).collect();
-
-        // Check if it's a builtin
-        if let Some(builtin) = crate::builtins::get_builtin(program) {
-            return Ok(builtin(&args, &mut self.env)?);
-        }
-
-        // Search in PATH
-        let program_path = self.find_in_path(program)?;
-
-        // Set up redirects
+        // Set up redirects first (needed for both builtins and external commands)
         let mut stdin = std::process::Stdio::inherit();
         let mut stdout = std::process::Stdio::inherit();
         let mut stderr = std::process::Stdio::inherit();
@@ -240,11 +230,79 @@ impl Executor {
                             .open(&redirect.target)?,
                     );
                 }
+                (Some(2), RedirectKind::Append) => {
+                    stderr = std::process::Stdio::from(
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&redirect.target)?,
+                    );
+                }
+                (None | Some(1), RedirectKind::Heredoc) => {
+                    use std::io::Write;
+                    let mut temp_file = tempfile::NamedTempFile::new()?;
+                    temp_file.write_all(redirect.target.as_bytes())?;
+                    temp_file.write_all(b"\n")?;
+                    let file = temp_file.reopen()?;
+                    stdin = std::process::Stdio::from(file);
+                    self.temp_files.push(temp_file);
+                }
+                (None | Some(1), RedirectKind::Herestring) => {
+                    use std::io::Write;
+                    let mut temp_file = tempfile::NamedTempFile::new()?;
+                    temp_file.write_all(redirect.target.as_bytes())?;
+                    temp_file.write_all(b"\n")?;
+                    let file = temp_file.reopen()?;
+                    stdin = std::process::Stdio::from(file);
+                    self.temp_files.push(temp_file);
+                }
+                (_, RedirectKind::OutputStdoutStderr) => {
+                    if redirect.fd.is_some() {
+                        return Err(ExecError::InvalidRedirect(
+                            "&> does not accept file descriptor prefixes".to_string(),
+                        ));
+                    }
+                    let file = std::fs::File::create(&redirect.target)?;
+                    let file2 = file.try_clone()?;
+                    stdout = std::process::Stdio::from(file);
+                    stderr = std::process::Stdio::from(file2);
+                }
+                (_, RedirectKind::AppendStdoutStderr) => {
+                    if redirect.fd.is_some() {
+                        return Err(ExecError::InvalidRedirect(
+                            "&>> does not accept file descriptor prefixes".to_string(),
+                        ));
+                    }
+                    let file = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&redirect.target)?;
+                    let file2 = file.try_clone()?;
+                    stdout = std::process::Stdio::from(file);
+                    stderr = std::process::Stdio::from(file2);
+                }
                 _ => {
                     // TODO: Handle other redirect types
                 }
             }
         }
+
+        if cmd.words.is_empty() {
+            // TODO: Handle redirects only (e.g., `> file` without command)
+            return Ok(ExitStatus::SUCCESS);
+        }
+
+        let program = &cmd.words[0];
+        let args: Vec<&str> = cmd.words[1..].iter().map(String::as_str).collect();
+
+        // Check if it's a builtin
+        if let Some(builtin) = crate::builtins::get_builtin(program) {
+            // TODO: Apply redirects to builtin output
+            return Ok(builtin(&args, &mut self.env)?);
+        }
+
+        // Search in PATH
+        let program_path = self.find_in_path(program)?;
 
         let mut command = std::process::Command::new(&program_path);
         command

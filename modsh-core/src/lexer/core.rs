@@ -49,6 +49,14 @@ impl<'a> Lexer<'a> {
                 if self.peek() == '&' {
                     self.advance();
                     Ok(Token::Operator(Operator::And))
+                } else if self.peek() == '>' {
+                    self.advance();
+                    if self.peek() == '>' {
+                        self.advance();
+                        Ok(Token::Redirect(Redirect::AppendStdoutStderr))
+                    } else {
+                        Ok(Token::Redirect(Redirect::OutputStdoutStderr))
+                    }
                 } else {
                     Ok(Token::Operator(Operator::Background))
                 }

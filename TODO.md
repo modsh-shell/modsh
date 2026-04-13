@@ -75,7 +75,7 @@
 ### 1.4 Executor
 - [x] Fork/exec pipeline
 - [x] Pipe setup (`|`)
-- [~] Redirect handling — basic < > >> done, need 2>>, &>, heredocs
+- [x] Redirect handling — < > >> 2> 2>> &> &>> heredoc herestring all done
 - [x] Builtin dispatch
 - [x] Exit status propagation
 - [ ] Background execution (&) — runs sync, need true fork

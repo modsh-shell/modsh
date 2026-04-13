@@ -155,6 +155,10 @@ pub enum RedirectKind {
     Herestring,
     /// Read-write: <>
     ReadWrite,
+    /// Output to both stdout and stderr: &>
+    OutputStdoutStderr,
+    /// Append to both stdout and stderr: &>>
+    AppendStdoutStderr,
 }
 
 /// Parser for POSIX shell syntax
@@ -794,6 +798,8 @@ impl Parser {
             }
             LRedirect::Herestring { word } => (None, RedirectKind::Herestring, word),
             LRedirect::ReadWrite { fd } => (fd, RedirectKind::ReadWrite, String::new()),
+            LRedirect::OutputStdoutStderr => (None, RedirectKind::OutputStdoutStderr, String::new()),
+            LRedirect::AppendStdoutStderr => (None, RedirectKind::AppendStdoutStderr, String::new()),
         };
 
         if needs_target {
