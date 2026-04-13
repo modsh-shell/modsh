@@ -70,7 +70,7 @@
 - [x] Word splitting — IFS-based, handles spaces/tabs/newlines, custom IFS, empty IFS (no split)
 - [x] Glob/pathname expansion — *, ?, [abc] patterns, no-match-returns-pattern behavior
 - [x] Tilde expansion — ~/ (current user), ~user (other users on Unix via libc getpwnam)
-- [~] Unit tests — basic tests done, need edge cases
+- [x] Unit tests — basic tests + 80+ edge case tests for lexer, parser, expander
 
 ### 1.4 Executor
 - [x] Fork/exec pipeline
