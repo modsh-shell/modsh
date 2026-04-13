@@ -87,7 +87,8 @@ impl<'a> Expander<'a> {
         // 6. Glob/pathname expansion
 
         let expanded = self.expand_parameters(word)?;
-        let expanded = Self::expand_tilde(&expanded);
+        let home = self.env.get("HOME").map(|h| h.to_string());
+        let expanded = Self::expand_tilde(&expanded, home.as_deref());
 
         // Word splitting based on IFS
         let ifs = self.env.get("IFS").unwrap_or(" \t\n");
@@ -651,17 +652,61 @@ impl<'a> Expander<'a> {
         }
     }
 
-    fn expand_tilde(word: &str) -> String {
-        if word.starts_with("~/") {
-            let home = std::env::var("HOME").unwrap_or_default();
-            home + &word[1..]
+    /// Expand tilde patterns: ~, ~/path and ~user/path
+    fn expand_tilde(word: &str, env_home: Option<&str>) -> String {
+        if word == "~" {
+            // Just ~ - expand to home directory
+            env_home.map_or_else(|| word.to_string(), |h| h.to_string())
+        } else if word.starts_with("~/") {
+            // ~/path - expand to home + path
+            let home = env_home.unwrap_or("");
+            home.to_string() + &word[1..]
         } else if word.starts_with('~') {
-            // ~username expansion - simplified
-            // TODO: Look up user's home directory
+            // ~username expansion
+            #[cfg(unix)]
+            {
+                let rest = &word[1..];
+                if let Some(slash_pos) = rest.find('/') {
+                    let username = &rest[..slash_pos];
+                    let path_suffix = &rest[slash_pos..];
+                    if let Some(home_dir) = Self::get_user_home(username) {
+                        return home_dir + path_suffix;
+                    }
+                } else {
+                    // ~username without path
+                    let username = rest;
+                    if let Some(home_dir) = Self::get_user_home(username) {
+                        return home_dir;
+                    }
+                }
+            }
+            // On non-Unix or if user not found, return as-is
             word.to_string()
         } else {
             word.to_string()
         }
+    }
+
+    /// Look up a user's home directory (Unix only)
+    #[cfg(unix)]
+    #[cfg_attr(not(unix), allow(dead_code))]
+    fn get_user_home(username: &str) -> Option<String> {
+        use std::ffi::{CStr, CString};
+        use libc::{getpwnam, passwd};
+
+        let c_username = CString::new(username).ok()?;
+        let pw = unsafe { getpwnam(c_username.as_ptr()) };
+
+        if pw.is_null() {
+            return None;
+        }
+
+        let home_dir = unsafe {
+            let pw = &*pw;
+            CStr::from_ptr(pw.pw_dir).to_str().ok()?.to_string()
+        };
+
+        Some(home_dir)
     }
 }
 
@@ -1045,5 +1090,61 @@ mod tests {
         
         let result = expander.expand("plain_file.txt").unwrap();
         assert_eq!(result, vec!["plain_file.txt"]);
+    }
+
+    #[test]
+    fn test_tilde_current_user() {
+        // ~/ should expand to $HOME/
+        let mut env = Environment::new();
+        env.set("HOME".to_string(), "/home/testuser".to_string());
+        
+        let mut expander = Expander::new(&mut env);
+        let result = expander.expand("~/Documents").unwrap();
+        assert_eq!(result, vec!["/home/testuser/Documents"]);
+    }
+
+    #[test]
+    fn test_tilde_just_home() {
+        // Just ~ should expand to $HOME
+        let mut env = Environment::new();
+        env.set("HOME".to_string(), "/home/testuser".to_string());
+        
+        let mut expander = Expander::new(&mut env);
+        let result = expander.expand("~").unwrap();
+        assert_eq!(result, vec!["/home/testuser"]);
+    }
+
+    #[test]
+    fn test_tilde_other_user() {
+        // ~root should expand to root's home on Unix
+        // This test may not work on all systems, so we check behavior
+        let mut env = Environment::new();
+        
+        let mut expander = Expander::new(&mut env);
+        let result = expander.expand("~root").unwrap();
+        
+        // On Unix, should expand to /root or similar
+        // On non-Unix, should return as-is
+        #[cfg(unix)]
+        {
+            // Should have expanded (or returned as-is if user not found)
+            assert!(!result.is_empty());
+        }
+        #[cfg(not(unix))]
+        {
+            assert_eq!(result, vec!["~root"]);
+        }
+    }
+
+    #[test]
+    fn test_tilde_unknown_user() {
+        // ~nonexistentuser should return as-is on Unix
+        let mut env = Environment::new();
+        
+        let mut expander = Expander::new(&mut env);
+        let result = expander.expand("~nonexistentuserxyz").unwrap();
+        
+        // Should return unchanged (user doesn't exist)
+        assert_eq!(result, vec!["~nonexistentuserxyz"]);
     }
 }

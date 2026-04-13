@@ -69,7 +69,7 @@
 - [x] Arithmetic expansion (`$((expr))`)
 - [x] Word splitting — IFS-based, handles spaces/tabs/newlines, custom IFS, empty IFS (no split)
 - [x] Glob/pathname expansion — *, ?, [abc] patterns, no-match-returns-pattern behavior
-- [~] Tilde expansion — ~/ done, ~user/ TODO
+- [x] Tilde expansion — ~/ (current user), ~user (other users on Unix via libc getpwnam)
 - [~] Unit tests — basic tests done, need edge cases
 
 ### 1.4 Executor
