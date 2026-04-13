@@ -92,7 +92,47 @@ impl<'a> Expander<'a> {
         // Word splitting based on IFS
         let ifs = self.env.get("IFS").unwrap_or(" \t\n");
         let words = Self::split_words(&expanded, ifs);
-        Ok(words)
+
+        // Glob/pathname expansion
+        let mut globbed = Vec::new();
+        for word in words {
+            let matches = Self::expand_glob(&word)?;
+            globbed.extend(matches);
+        }
+
+        Ok(globbed)
+    }
+
+    /// Expand glob patterns into matching filenames
+    fn expand_glob(pattern: &str) -> Result<Vec<String>, ExpandError> {
+        use glob::glob;
+
+        // Check if pattern contains glob characters
+        let has_glob = pattern.chars().any(|c| matches!(c, '*' | '?' | '[' | ']'));
+
+        if !has_glob {
+            return Ok(vec![pattern.to_string()]);
+        }
+
+        // Perform glob expansion
+        let mut matches = Vec::new();
+        for entry in glob(pattern).map_err(|e| ExpandError::InvalidParameter(e.to_string()))? {
+            match entry {
+                Ok(path) => {
+                    matches.push(path.to_string_lossy().to_string());
+                }
+                Err(e) => {
+                    return Err(ExpandError::InvalidParameter(e.to_string()));
+                }
+            }
+        }
+
+        // If no matches found, return the original pattern (bash behavior)
+        if matches.is_empty() {
+            matches.push(pattern.to_string());
+        }
+
+        Ok(matches)
     }
 
     /// Split a string into words based on IFS (Internal Field Separator)
@@ -961,5 +1001,49 @@ mod tests {
         let mut expander = Expander::new(&mut env);
         let result = expander.expand("$PATH_VAR").unwrap();
         assert_eq!(result, vec!["/usr/bin", "/bin", "/usr/local/bin"]);
+    }
+
+    #[test]
+    fn test_glob_expansion_star() {
+        // Test *.rs pattern - should match at least this file (expander.rs)
+        let mut env = Environment::new();
+        let mut expander = Expander::new(&mut env);
+        
+        // Use src/*.rs which should exist
+        let result = expander.expand("src/*.rs").unwrap();
+        // Should match multiple .rs files in src/
+        assert!(!result.is_empty(), "glob should match some files");
+        assert!(result.iter().any(|f| f.contains("expander.rs")));
+    }
+
+    #[test]
+    fn test_glob_expansion_question() {
+        // Test ? pattern matches single char
+        let mut env = Environment::new();
+        let mut expander = Expander::new(&mut env);
+        
+        // Test with Cargo.tom? which should match Cargo.toml
+        let result = expander.expand("Cargo.tom?").unwrap();
+        assert!(result.iter().any(|f| f == "Cargo.toml"));
+    }
+
+    #[test]
+    fn test_glob_no_match_returns_pattern() {
+        // When no files match, return the pattern itself (bash behavior)
+        let mut env = Environment::new();
+        let mut expander = Expander::new(&mut env);
+        
+        let result = expander.expand("*.nonexistent_extension").unwrap();
+        assert_eq!(result, vec!["*.nonexistent_extension"]);
+    }
+
+    #[test]
+    fn test_glob_no_special_chars() {
+        // Plain filenames without glob chars pass through unchanged
+        let mut env = Environment::new();
+        let mut expander = Expander::new(&mut env);
+        
+        let result = expander.expand("plain_file.txt").unwrap();
+        assert_eq!(result, vec!["plain_file.txt"]);
     }
 }

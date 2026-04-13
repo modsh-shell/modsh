@@ -11,6 +11,7 @@ description = "POSIX-compatible shell core for modsh"
 [dependencies]
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+glob = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

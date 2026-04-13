@@ -68,7 +68,7 @@
 - [x] Command substitution (`$(cmd)`, `` `cmd` ``)
 - [x] Arithmetic expansion (`$((expr))`)
 - [x] Word splitting — IFS-based, handles spaces/tabs/newlines, custom IFS, empty IFS (no split)
-- [ ] Glob/pathname expansion
+- [x] Glob/pathname expansion — *, ?, [abc] patterns, no-match-returns-pattern behavior
 - [~] Tilde expansion — ~/ done, ~user/ TODO
 - [~] Unit tests — basic tests done, need edge cases
 
