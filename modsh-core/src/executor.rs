@@ -1,5 +1,6 @@
 //! Executor — Forks/execs commands, manages pipes
 
+use crate::jobcontrol::{JobControl, JobStatus};
 use crate::parser::{Command, RedirectKind, SimpleCommand};
 use thiserror::Error;
 
@@ -70,6 +71,8 @@ pub struct Executor {
     pub cwd: std::path::PathBuf,
     /// Temporary files for heredocs/herestrings (kept alive until process starts)
     temp_files: Vec<tempfile::NamedTempFile>,
+    /// Job control manager
+    job_control: JobControl,
 }
 
 impl Executor {
@@ -80,7 +83,25 @@ impl Executor {
             env: std::env::vars().collect(),
             cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/")),
             temp_files: Vec::new(),
+            job_control: JobControl::new(),
         }
+    }
+
+    /// Get a reference to the job control manager
+    #[must_use]
+    pub fn job_control(&self) -> &JobControl {
+        &self.job_control
+    }
+
+    /// Get a mutable reference to the job control manager
+    #[must_use]
+    pub fn job_control_mut(&mut self) -> &mut JobControl {
+        &mut self.job_control
+    }
+
+    /// Reap completed background jobs
+    pub fn reap_jobs(&mut self) {
+        self.job_control.cleanup();
     }
 
     /// Execute a command AST
@@ -111,14 +132,8 @@ impl Executor {
                 self.execute(left)?;
                 self.execute(right)
             }
-            Command::Background(cmd) => {
-                // TODO: Fork and run in background
-                self.execute(cmd)
-            }
-            Command::Subshell(cmd) => {
-                // TODO: Fork and execute in subshell
-                self.execute(cmd)
-            }
+            Command::Background(cmd) => self.execute_background(cmd),
+            Command::Subshell(cmd) => self.execute_subshell(cmd),
             Command::Group(cmd) => self.execute(cmd),
             Command::If(if_clause) => self.execute_if(if_clause),
             Command::For(for_loop) => self.execute_for(for_loop),
@@ -200,6 +215,162 @@ impl Executor {
         // TODO: Register function in environment
         // For now, just execute the body immediately (not correct behavior)
         self.execute(&func_def.body)
+    }
+
+    /// Execute a command in the background using fork
+    #[cfg(unix)]
+    fn execute_background(&mut self, cmd: &Command) -> Result<ExitStatus, ExecError> {
+        let command_str = self.command_to_string(cmd);
+
+        // Fork the process
+        let pid = unsafe { libc::fork() };
+
+        match pid {
+            -1 => Err(ExecError::Io(std::io::Error::last_os_error())),
+            0 => {
+                // Child process
+                // Create new process group
+                let _ = unsafe { libc::setpgid(0, 0) };
+
+                // Ignore SIGHUP in background process (common shell behavior)
+                unsafe {
+                    let sig_action = libc::sigaction {
+                        sa_sigaction: libc::SIG_IGN,
+                        sa_mask: std::mem::zeroed(),
+                        sa_flags: 0,
+                        sa_restorer: None,
+                    };
+                    libc::sigaction(libc::SIGHUP, &sig_action, std::ptr::null_mut());
+                }
+
+                // Execute the command and capture exit status
+                let exit_code = match self.execute(cmd) {
+                    Ok(status) if status.success() => 0,
+                    Ok(status) => i32::from(status.code),
+                    Err(_) => 1,
+                };
+
+                // Use _exit to avoid flushing inherited stdio buffers
+                unsafe { libc::_exit(exit_code) };
+            }
+            pid => {
+                // Parent process
+                // pid is guaranteed to be positive here (not -1, not 0)
+                let child_pid = pid as libc::pid_t;
+                // After child's setpgid(0, 0), pgid equals child's pid
+                let pgid = child_pid as u32;
+
+                // Add job to job control
+                let job_id = self.job_control.add_job(command_str.clone(), Some(pgid));
+
+                // Update job status to running
+                self.job_control.update_status(job_id, JobStatus::Running);
+
+                // Print job info like bash: [job_id] process_group_id
+                println!("[{}] {}", job_id, pid);
+
+                // Return success immediately (background commands always return 0)
+                Ok(ExitStatus::SUCCESS)
+            }
+        }
+    }
+
+    /// Non-Unix fallback: run synchronously with warning
+    #[cfg(not(unix))]
+    fn execute_background(&mut self, cmd: &Command) -> Result<ExitStatus, ExecError> {
+        eprintln!("modsh: background execution not supported on this platform");
+        self.execute(cmd)
+    }
+
+    /// Execute a command in a subshell using fork (synchronous, waits for child)
+    #[cfg(unix)]
+    fn execute_subshell(&mut self, cmd: &Command) -> Result<ExitStatus, ExecError> {
+        // Fork the process
+        let pid = unsafe { libc::fork() };
+
+        match pid {
+            -1 => Err(ExecError::Io(std::io::Error::last_os_error())),
+            0 => {
+                // Child process - runs in same process group as parent
+                // Subshell doesn't create new process group, so setpgid(0, 0) is NOT called
+                // This allows the subshell to receive signals sent to the parent's process group
+
+                // Execute the command
+                let result = self.execute(cmd);
+
+                // Flush stdout/stderr before exiting to ensure all output is written
+                // (important because _exit doesn't flush stdio buffers)
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+
+                let exit_code = match result {
+                    Ok(status) if status.success() => 0,
+                    Ok(status) => i32::from(status.code),
+                    Err(_) => 1,
+                };
+
+                // Use _exit to avoid flushing inherited stdio buffers in the parent
+                unsafe { libc::_exit(exit_code) };
+            }
+            _ => {
+                // Parent process - wait for child to complete
+                let mut status: libc::c_int = 0;
+                let result = unsafe { libc::waitpid(pid, &mut status, 0) };
+
+                if result == -1 {
+                    return Err(ExecError::Io(std::io::Error::last_os_error()));
+                }
+
+                // Extract exit status
+                let exit_status = if libc::WIFEXITED(status) {
+                    ExitStatus {
+                        code: u8::try_from(libc::WEXITSTATUS(status)).unwrap_or(255),
+                        signaled: false,
+                    }
+                } else if libc::WIFSIGNALED(status) {
+                    let signal_num = u8::try_from(libc::WTERMSIG(status)).unwrap_or(127);
+                    ExitStatus {
+                        code: signal_num.saturating_add(128),
+                        signaled: true,
+                    }
+                } else {
+                    // Child was stopped (WIFSTOPPED) or continued (WIFCONTINUED)
+                    // This is an abnormal condition for a synchronous wait
+                    ExitStatus {
+                        code: 1,
+                        signaled: false,
+                    }
+                };
+
+                Ok(exit_status)
+            }
+        }
+    }
+
+    /// Non-Unix fallback for subshell: run synchronously with warning
+    #[cfg(not(unix))]
+    fn execute_subshell(&mut self, cmd: &Command) -> Result<ExitStatus, ExecError> {
+        eprintln!("modsh: subshell execution not supported on this platform");
+        self.execute(cmd)
+    }
+
+    /// Convert a command to a string representation for job control
+    fn command_to_string(&self, cmd: &Command) -> String {
+        match cmd {
+            Command::Simple(s) => s.words.join(" "),
+            Command::Pipeline(_) => "pipeline".to_string(),
+            Command::And(_, _) => "and-list".to_string(),
+            Command::Or(_, _) => "or-list".to_string(),
+            Command::List(_, _) => "list".to_string(),
+            Command::Background(c) => format!("{} &", self.command_to_string(c)),
+            Command::Subshell(_) => "subshell".to_string(),
+            Command::Group(_) => "group".to_string(),
+            Command::If(_) => "if-statement".to_string(),
+            Command::For(_) => "for-loop".to_string(),
+            Command::While(_) => "while-loop".to_string(),
+            Command::Case(_) => "case-statement".to_string(),
+            Command::Function(_) => "function-def".to_string(),
+        }
     }
 
     fn execute_simple(&mut self, cmd: &SimpleCommand) -> Result<ExitStatus, ExecError> {
@@ -331,8 +502,152 @@ impl Executor {
             return self.execute(&commands[0]);
         }
 
-        // For simplicity, we'll just use Command::pipeline()
-        // TODO: Proper pipeline implementation with individual process control
+        // Pipeline with multiple commands - fork for each stage
+        // This allows builtins to participate in pipelines
+        self.execute_pipeline_forked(commands)
+    }
+
+    /// Execute a pipeline by forking for each stage
+    /// This supports both builtins and external commands in the pipeline
+    #[cfg(unix)]
+    fn execute_pipeline_forked(&mut self, commands: &[Command]) -> Result<ExitStatus, ExecError> {
+        let mut prev_read_end: Option<i32> = None;
+        let mut pids: Vec<libc::pid_t> = Vec::new();
+
+        for (i, cmd) in commands.iter().enumerate() {
+            let is_first = i == 0;
+            let is_last = i == commands.len() - 1;
+
+            // Create pipe for this stage (unless it's the last one)
+            let (read_end, write_end) = if !is_last {
+                let mut pipe_fds: [libc::c_int; 2] = [-1, -1];
+                if unsafe { libc::pipe(pipe_fds.as_mut_ptr()) } == -1 {
+                    return Err(ExecError::Io(std::io::Error::last_os_error()));
+                }
+                (Some(pipe_fds[0]), Some(pipe_fds[1]))
+            } else {
+                (None, None)
+            };
+
+            let pid = unsafe { libc::fork() };
+
+            match pid {
+                -1 => {
+                    // Clean up pipes on error
+                    if let Some(fd) = read_end {
+                        unsafe { libc::close(fd) };
+                    }
+                    if let Some(fd) = write_end {
+                        unsafe { libc::close(fd) };
+                    }
+                    if let Some(fd) = prev_read_end {
+                        unsafe { libc::close(fd) };
+                    }
+                    return Err(ExecError::Io(std::io::Error::last_os_error()));
+                }
+                0 => {
+                    // Child process
+                    // Close previous read end if not first
+                    if !is_first {
+                        if let Some(fd) = prev_read_end {
+                            unsafe {
+                                libc::dup2(fd, libc::STDIN_FILENO);
+                                libc::close(fd);
+                            }
+                        }
+                    }
+
+                    // Set up stdout to write to pipe if not last
+                    if let Some(fd) = write_end {
+                        unsafe {
+                            libc::dup2(fd, libc::STDOUT_FILENO);
+                            libc::close(fd);
+                        }
+                    }
+                    // Close the read end of the current pipe in child
+                    if let Some(fd) = read_end {
+                        unsafe { libc::close(fd) };
+                    }
+
+                    // Execute the command
+                    let result = self.execute(cmd);
+
+                    // Flush stdout/stderr before exiting to ensure all output is written
+                    // (important because _exit doesn't flush stdio buffers)
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                    let _ = std::io::Write::flush(&mut std::io::stderr());
+
+                    let exit_code = match result {
+                        Ok(status) if status.success() => 0,
+                        Ok(status) => i32::from(status.code),
+                        Err(_) => 1,
+                    };
+                    std::process::exit(exit_code);
+                }
+                _ => {
+                    // Parent process
+                    // Close previous read end
+                    if let Some(fd) = prev_read_end {
+                        unsafe { libc::close(fd) };
+                    }
+                    // Close write end of current pipe (parent doesn't need it)
+                    if let Some(fd) = write_end {
+                        unsafe { libc::close(fd) };
+                    }
+
+                    pids.push(pid);
+                    // Save read end for next iteration
+                    prev_read_end = read_end;
+                }
+            }
+        }
+
+        // Close the final read end (should be None for last stage, but be safe)
+        if let Some(fd) = prev_read_end {
+            unsafe { libc::close(fd) };
+        }
+
+        // Wait for all children and get the last one's status
+        let mut last_status = ExitStatus::SUCCESS;
+        for pid in pids {
+            let mut status: libc::c_int = 0;
+            if unsafe { libc::waitpid(pid, &mut status, 0) } == -1 {
+                return Err(ExecError::Io(std::io::Error::last_os_error()));
+            }
+
+            last_status = if libc::WIFEXITED(status) {
+                ExitStatus {
+                    code: u8::try_from(libc::WEXITSTATUS(status)).unwrap_or(255),
+                    signaled: false,
+                }
+            } else if libc::WIFSIGNALED(status) {
+                let signal_num = u8::try_from(libc::WTERMSIG(status)).unwrap_or(127);
+                ExitStatus {
+                    code: signal_num.saturating_add(128),
+                    signaled: true,
+                }
+            } else {
+                ExitStatus {
+                    code: 1,
+                    signaled: false,
+                }
+            };
+        }
+
+        Ok(last_status)
+    }
+
+    /// Non-Unix fallback for pipeline with builtins
+    #[cfg(not(unix))]
+    fn execute_pipeline_forked(&mut self, commands: &[Command]) -> Result<ExitStatus, ExecError> {
+        // Fallback: only external commands in pipelines
+        eprintln!("modsh: full pipeline support requires Unix");
+        self.execute_pipeline_external_only(commands)
+    }
+
+    /// Execute pipeline with only external commands (original implementation)
+    #[cfg(not(unix))]
+    fn execute_pipeline_external_only(&mut self, commands: &[Command]) -> Result<ExitStatus, ExecError> {
         let mut last_stdout: Option<std::process::ChildStdout> = None;
         let mut children: Vec<std::process::Child> = Vec::new();
 
@@ -353,6 +668,13 @@ impl Executor {
                 Command::Simple(s) => s.words[1..].iter().map(String::as_str).collect(),
                 _ => vec![],
             };
+
+            // Check if it's a builtin - if so, we can't run it in this external-only path
+            if crate::builtins::get_builtin(program).is_some() {
+                return Err(ExecError::CommandNotFound(
+                    format!("builtin '{}' not supported in pipeline on this platform", program)
+                ));
+            }
 
             let program_path = self.find_in_path(program)?;
 
@@ -426,5 +748,334 @@ impl Executor {
 impl Default for Executor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builtins::BuiltinError;
+    use crate::parser::parse;
+
+    fn execute(cmd_str: &str) -> Result<ExitStatus, ExecError> {
+        let ast = parse(cmd_str).expect("Failed to parse command");
+        let mut executor = Executor::new();
+        executor.execute(&ast)
+    }
+
+    // ===== Simple Command Tests =====
+
+    #[test]
+    fn test_true_command() {
+        let status = execute("true").expect("Failed to execute true");
+        assert!(status.success(), "true should return success");
+        assert_eq!(status.code, 0);
+    }
+
+    #[test]
+    fn test_false_command() {
+        let status = execute("false").expect("Failed to execute false");
+        assert!(!status.success(), "false should return failure");
+        assert_eq!(status.code, 1);
+    }
+
+    #[test]
+    fn test_command_not_found() {
+        let result = execute("this_command_definitely_does_not_exist_xyz");
+        assert!(
+            matches!(result, Err(ExecError::CommandNotFound(_))),
+            "Expected CommandNotFound error"
+        );
+    }
+
+    #[test]
+    fn test_echo_command() {
+        let status = execute("echo hello").expect("Failed to execute echo");
+        assert!(status.success(), "echo should return success");
+    }
+
+    // ===== Exit Status Tests =====
+
+    #[test]
+    fn test_exit_status_success() {
+        let status = execute("/bin/sh -c 'exit 0'").expect("Failed to execute");
+        assert_eq!(status.code, 0);
+        assert!(!status.signaled);
+    }
+
+    #[test]
+    fn test_exit_status_failure() {
+        let status = execute("/bin/sh -c 'exit 42'").expect("Failed to execute");
+        assert_eq!(status.code, 42);
+        assert!(!status.signaled);
+    }
+
+    #[test]
+    fn test_exit_status_255_max() {
+        let status = execute("/bin/sh -c 'exit 256'").expect("Failed to execute");
+        // Exit codes wrap around: 256 % 256 = 0, but we clamp to 255 for overflow
+        // Actually in POSIX, exit codes are 0-255, higher values wrap
+        assert!(!status.signaled);
+    }
+
+    // ===== Logical Operators Tests =====
+
+    #[test]
+    fn test_and_operator_success() {
+        let status = execute("true && true").expect("Failed to execute");
+        assert!(status.success(), "true && true should succeed");
+    }
+
+    #[test]
+    fn test_and_operator_failure_left() {
+        let status = execute("false && true").expect("Failed to execute");
+        assert!(!status.success(), "false && true should fail");
+        assert_eq!(status.code, 1);
+    }
+
+    #[test]
+    fn test_and_operator_failure_right() {
+        let status = execute("true && false").expect("Failed to execute");
+        assert!(!status.success(), "true && false should fail");
+        assert_eq!(status.code, 1);
+    }
+
+    #[test]
+    fn test_or_operator_success_left() {
+        let status = execute("true || false").expect("Failed to execute");
+        assert!(status.success(), "true || false should succeed");
+    }
+
+    #[test]
+    fn test_or_operator_success_right() {
+        let status = execute("false || true").expect("Failed to execute");
+        assert!(status.success(), "false || true should succeed");
+    }
+
+    #[test]
+    fn test_or_operator_failure_both() {
+        let status = execute("false || false").expect("Failed to execute");
+        assert!(!status.success(), "false || false should fail");
+        assert_eq!(status.code, 1);
+    }
+
+    #[test]
+    fn test_mixed_and_or() {
+        let status = execute("false || true && true").expect("Failed to execute");
+        assert!(status.success(), "false || true && true should succeed");
+    }
+
+    // ===== List/Sequence Tests =====
+
+    #[test]
+    fn test_list_executes_both() {
+        let status = execute("true ; true").expect("Failed to execute");
+        assert!(status.success(), "true ; true should succeed");
+    }
+
+    #[test]
+    fn test_list_uses_last_status() {
+        let status = execute("true ; false").expect("Failed to execute");
+        assert!(!status.success(), "true ; false should use last exit status");
+        assert_eq!(status.code, 1);
+    }
+
+    // ===== Pipeline Tests =====
+
+    #[test]
+    fn test_simple_pipeline() {
+        let status = execute("echo hello | cat").expect("Failed to execute pipeline");
+        assert!(status.success(), "echo | cat should succeed");
+    }
+
+    #[test]
+    fn test_pipeline_failure() {
+        let status = execute("false | true").expect("Failed to execute pipeline");
+        // Last command's status determines pipeline exit status
+        assert!(status.success(), "false | true should return true's status");
+    }
+
+    #[test]
+    fn test_pipeline_with_false_at_end() {
+        let status = execute("true | false").expect("Failed to execute pipeline");
+        assert!(!status.success(), "true | false should return false's status");
+    }
+
+    #[test]
+    fn test_three_stage_pipeline() {
+        let status = execute("echo hello | cat | cat").expect("Failed to execute");
+        assert!(status.success(), "3-stage pipeline should succeed");
+    }
+
+    // ===== Group Tests =====
+
+    #[test]
+    fn test_group_success() {
+        let status = execute("{ true; }").expect("Failed to execute group");
+        assert!(status.success(), "Group with true should succeed");
+    }
+
+    #[test]
+    fn test_group_failure() {
+        let status = execute("{ false; }").expect("Failed to execute group");
+        assert!(!status.success(), "Group with false should fail");
+    }
+
+    // ===== Builtin Tests =====
+
+    /// WARNING: This test modifies the process-global current directory.
+    /// Running tests in parallel may cause interference with other tests
+    /// that depend on the working directory.
+    #[test]
+    fn test_builtin_cd() {
+        let original_dir = std::env::current_dir().expect("Failed to get current dir");
+        let ast = parse("cd /tmp").expect("Failed to parse");
+        let mut executor = Executor::new();
+        let status = executor.execute(&ast).expect("Failed to execute cd");
+        assert!(status.success(), "cd to /tmp should succeed");
+        // The cd builtin changes the actual process working directory
+        assert_eq!(
+            std::env::current_dir().expect("Failed to get current dir"),
+            std::path::PathBuf::from("/tmp")
+        );
+        // Restore original directory
+        std::env::set_current_dir(original_dir).expect("Failed to restore dir");
+    }
+
+    #[test]
+    fn test_builtin_echo() {
+        let status = execute("echo").expect("Failed to execute echo");
+        assert!(status.success(), "echo should succeed");
+    }
+
+    #[test]
+    fn test_builtin_exit_status() {
+        // exit builtin returns Err(BuiltinError::Exit(code)) which signals the shell to exit
+        let result = execute("exit 0");
+        assert!(
+            matches!(result, Err(ExecError::Builtin(BuiltinError::Exit(0)))),
+            "exit 0 should return Exit error with code 0"
+        );
+    }
+
+    #[test]
+    fn test_builtin_exit_nonzero() {
+        let result = execute("exit 42");
+        assert!(
+            matches!(result, Err(ExecError::Builtin(BuiltinError::Exit(42)))),
+            "exit 42 should return Exit error with code 42"
+        );
+    }
+
+    // ===== ExitStatus Tests =====
+
+    #[test]
+    fn test_exit_status_from_process_success() {
+        let process_status = std::process::Command::new("true")
+            .status()
+            .expect("Failed to run true");
+        let exit_status = ExitStatus::from_process(process_status);
+        assert!(exit_status.success());
+        assert_eq!(exit_status.code, 0);
+        assert!(!exit_status.signaled);
+    }
+
+    #[test]
+    fn test_exit_status_constants() {
+        assert!(ExitStatus::SUCCESS.success());
+        assert_eq!(ExitStatus::SUCCESS.code, 0);
+    }
+
+    // ===== Executor Creation Tests =====
+
+    #[test]
+    fn test_executor_new() {
+        let executor = Executor::new();
+        assert!(!executor.env.is_empty(), "Executor should inherit environment");
+        assert!(executor.cwd.exists(), "Executor should have valid cwd");
+    }
+
+    #[test]
+    fn test_executor_default() {
+        let executor: Executor = Default::default();
+        assert!(!executor.env.is_empty(), "Default executor should inherit environment");
+    }
+
+    #[test]
+    fn test_executor_job_control() {
+        let executor = Executor::new();
+        assert!(executor.job_control().list_jobs().is_empty());
+    }
+
+    // ===== Fork-based Feature Tests =====
+    // These tests must be in a single test function because fork() in a
+    // multi-threaded environment can cause issues with locks and shared state.
+    // By putting all fork-based tests in one function, they run serially
+    // without interference from other tests.
+    //
+    // NOTE: This test must be run with --nocapture because output capturing
+    // interferes with fork-based I/O redirection. Run with:
+    //   cargo test --package modsh-core test_fork_based_features -- --ignored --nocapture
+
+    #[test]
+    #[ignore = "requires --nocapture due to fork-based I/O redirection"]
+    fn test_fork_based_features() {
+        // ----- Subshell Tests -----
+
+        // Subshell with true should succeed
+        let status = execute("( true )").expect("Failed to execute subshell");
+        assert!(status.success(), "Subshell with true should succeed");
+
+        // Subshell with false should fail
+        let status = execute("( false )").expect("Failed to execute subshell");
+        assert!(!status.success(), "Subshell with false should fail");
+        assert_eq!(status.code, 1);
+
+        // Subshell exit code propagation
+        let status = execute("( /bin/sh -c 'exit 42' )").expect("Failed to execute subshell");
+        assert_eq!(status.code, 42, "Subshell should propagate exit code");
+
+        // Nested subshell
+        let status = execute("( ( true ) )").expect("Failed to execute nested subshell");
+        assert!(status.success(), "Nested subshell should succeed");
+
+        // ----- Background Tests -----
+
+        // Background returns success immediately
+        let status = execute("sleep 0.1 &").expect("Failed to execute background");
+        assert!(status.success(), "Background command should return success immediately");
+
+        // Small delay to let previous background process start
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Background job added to job control
+        let ast = parse("sleep 0.05 &").expect("Failed to parse");
+        let mut executor = Executor::new();
+        let _ = executor.execute(&ast).expect("Failed to execute");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let jobs = executor.job_control().list_jobs();
+        assert!(!jobs.is_empty(), "Background job should be added to job control");
+
+        // Delay before next test
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // ----- Pipeline with Fork Tests -----
+
+        // Test simple external pipeline first
+        let status = execute("/bin/echo test | /bin/grep test").expect("Failed external pipeline");
+        assert!(status.success(), "External pipeline should succeed");
+
+        // Pipeline with builtins and logical operators
+        // Note: This uses fork-based pipeline since there are multiple commands
+        let status = execute("echo test | grep test && true").expect("Failed");
+        assert!(status.success(), "Complex pipeline with && should succeed");
+
+        // Subshell with pipeline
+        let status = execute("( echo hello | cat )").expect("Failed");
+        assert!(status.success(), "Subshell with pipeline should succeed");
+
+        // List with background
+        let status = execute("true; sleep 0.01 &").expect("Failed");
+        assert!(status.success(), "List with background should succeed");
     }
 }

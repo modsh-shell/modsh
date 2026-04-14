@@ -57,6 +57,9 @@ fn builtin_cd(args: &[&str], env: &mut HashMap<String, String>) -> BuiltinResult
             .join(path)
     };
 
+    // Get current PWD before changing directory (for OLDPWD)
+    let old_pwd = env.get("PWD").cloned().unwrap_or_default();
+
     std::env::set_current_dir(&new_path).map_err(|e| BuiltinError::Generic(e.to_string()))?;
 
     // Update PWD
@@ -65,11 +68,10 @@ fn builtin_cd(args: &[&str], env: &mut HashMap<String, String>) -> BuiltinResult
         .unwrap_or(new_path)
         .to_string_lossy()
         .to_string();
-    env.insert("PWD".to_string(), canonical.clone());
-    env.insert(
-        "OLDPWD".to_string(),
-        env.get("PWD").cloned().unwrap_or_default(),
-    );
+
+    // Set OLDPWD first (to the previous PWD), then update PWD
+    env.insert("OLDPWD".to_string(), old_pwd);
+    env.insert("PWD".to_string(), canonical);
 
     Ok(super::executor::ExitStatus::SUCCESS)
 }
@@ -98,11 +100,17 @@ fn builtin_echo(args: &[&str], _env: &mut HashMap<String, String>) -> BuiltinRes
     }
 
     let output = args[start..].join(" ");
+    eprintln!("[DEBUG builtin_echo] output='{}', newline={}", output, newline);
     if newline {
         println!("{output}");
     } else {
         print!("{output}");
     }
+
+    // Flush stdout to ensure output is written when stdout is a pipe
+    // (Rust stdout uses block buffering when connected to a pipe)
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    eprintln!("[DEBUG builtin_echo] flushed stdout");
 
     Ok(super::executor::ExitStatus::SUCCESS)
 }

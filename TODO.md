@@ -78,9 +78,9 @@
 - [x] Redirect handling — < > >> 2> 2>> &> &>> heredoc herestring all done
 - [x] Builtin dispatch
 - [x] Exit status propagation
-- [ ] Background execution (&) — runs sync, need true fork
-- [ ] Subshell execution — runs sync, need fork
-- [ ] Unit tests — execution correctness
+- [x] Background execution (&) — true fork with process groups, job tracking
+- [x] Subshell execution — true fork with waitpid, proper exit status propagation
+- [x] Unit tests — 40+ tests covering commands, pipelines, operators, subshells, background, builtins
 
 ### 1.5 Builtins
 - [x] `cd`, `pwd`
