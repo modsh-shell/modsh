@@ -85,10 +85,10 @@
 ### 1.5 Builtins
 - [x] `cd`, `pwd`
 - [x] `export`, `unset`, `env`
-- [ ] `alias`, `unalias`
-- [~] `source` / `.` — reads file, TODO: actually execute
+- [x] `alias`, `unalias`
+- [x] `source` / `.` — executes scripts in current shell context
 - [x] `echo`
-- [ ] `printf`
+- [x] `printf`
 - [x] `exit`
 - [ ] `return`
 - [ ] `set`, `shift`

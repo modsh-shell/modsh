@@ -16,6 +16,9 @@ pub enum ExecError {
     /// Invalid redirect specification
     #[error("invalid redirect: {0}")]
     InvalidRedirect(String),
+    /// Parse error during script execution
+    #[error("parse error: {0}")]
+    ParseError(String),
     /// Non-zero exit status
     #[error("exit status: {0}")]
     ExitStatus(i32),
@@ -67,6 +70,8 @@ impl ExitStatus {
 pub struct Executor {
     /// Environment variables
     pub env: std::collections::HashMap<String, String>,
+    /// Aliases (name -> replacement)
+    pub aliases: std::collections::HashMap<String, String>,
     /// Current working directory
     pub cwd: std::path::PathBuf,
     /// Temporary files for heredocs/herestrings (kept alive until process starts)
@@ -81,6 +86,7 @@ impl Executor {
     pub fn new() -> Self {
         Self {
             env: std::env::vars().collect(),
+            aliases: std::collections::HashMap::new(),
             cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/")),
             temp_files: Vec::new(),
             job_control: JobControl::new(),
@@ -373,9 +379,66 @@ impl Executor {
         }
     }
 
+    /// Expand aliases in a simple command
+    /// Returns a new SimpleCommand with aliases expanded
+    /// Prevents infinite recursion by tracking expanded aliases
+    fn expand_aliases(&self, cmd: &SimpleCommand) -> SimpleCommand {
+        self.expand_aliases_recursive(cmd, &mut std::collections::HashSet::new())
+    }
+
+    /// Recursive helper with cycle detection
+    fn expand_aliases_recursive(
+        &self,
+        cmd: &SimpleCommand,
+        expanded: &mut std::collections::HashSet<String>,
+    ) -> SimpleCommand {
+        if cmd.words.is_empty() {
+            return cmd.clone();
+        }
+
+        let first_word = &cmd.words[0];
+
+        // Check if already expanded (prevents cycles)
+        if expanded.contains(first_word) {
+            return cmd.clone();
+        }
+
+        // Check if the first word is an alias
+        if let Some(alias_value) = self.aliases.get(first_word) {
+            // Parse the alias value into words
+            let alias_words: Vec<String> = alias_value
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+
+            if !alias_words.is_empty() {
+                // Mark this alias as expanded (prevents recursion)
+                expanded.insert(first_word.clone());
+
+                // Combine alias words with the rest of the command
+                let mut new_words = alias_words;
+                new_words.extend(cmd.words[1..].iter().cloned());
+
+                let new_cmd = SimpleCommand {
+                    words: new_words,
+                    redirects: cmd.redirects.clone(),
+                };
+
+                // Recursively expand the result (for chained aliases)
+                return self.expand_aliases_recursive(&new_cmd, expanded);
+            }
+        }
+
+        // No alias expansion needed
+        cmd.clone()
+    }
+
     fn execute_simple(&mut self, cmd: &SimpleCommand) -> Result<ExitStatus, ExecError> {
         // Clear temporary files from previous command
         self.temp_files.clear();
+
+        // Expand aliases in the command
+        let cmd = self.expand_aliases(cmd);
 
         // Set up redirects first (needed for both builtins and external commands)
         let mut stdin = std::process::Stdio::inherit();
@@ -469,7 +532,13 @@ impl Executor {
         // Check if it's a builtin
         if let Some(builtin) = crate::builtins::get_builtin(program) {
             // TODO: Apply redirects to builtin output
-            return Ok(builtin(&args, &mut self.env)?);
+            match builtin(&args, &mut self.env, &mut self.aliases) {
+                Ok(status) => return Ok(status),
+                Err(crate::builtins::BuiltinError::Source(path)) => {
+                    return self.execute_source(&path);
+                }
+                Err(e) => return Err(ExecError::Builtin(e)),
+            }
         }
 
         // Search in PATH
@@ -722,6 +791,32 @@ impl Executor {
         Ok(last_status)
     }
 
+    /// Execute a sourced script file
+    fn execute_source(&mut self, path: &str) -> Result<ExitStatus, ExecError> {
+        // Check file metadata
+        let metadata = std::fs::metadata(path)
+            .map_err(|e| ExecError::Io(e))?;
+
+        // Ensure it's a file (not a directory)
+        if !metadata.is_file() {
+            return Err(ExecError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{}: Is a directory", path),
+            )));
+        }
+
+        // Read the script content
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| ExecError::Io(e))?;
+
+        // Parse the script
+        let ast = crate::parser::parse(&content)
+            .map_err(|e| ExecError::ParseError(e.to_string()))?;
+
+        // Execute the parsed script
+        self.execute(&ast)
+    }
+
     fn find_in_path(&self, program: &str) -> Result<std::path::PathBuf, ExecError> {
         // If it contains a slash, treat as path
         if program.contains('/') {
@@ -965,6 +1060,177 @@ mod tests {
             matches!(result, Err(ExecError::Builtin(BuiltinError::Exit(42)))),
             "exit 42 should return Exit error with code 42"
         );
+    }
+
+    // ===== Printf Tests =====
+
+    #[test]
+    fn test_builtin_printf_simple() {
+        let status = execute("printf 'hello world'").expect("Failed to execute printf");
+        assert!(status.success(), "printf should succeed");
+    }
+
+    #[test]
+    fn test_builtin_printf_string() {
+        let status = execute("printf '%s' hello").expect("Failed to execute printf");
+        assert!(status.success(), "printf %s should succeed");
+    }
+
+    #[test]
+    fn test_builtin_printf_integer() {
+        let status = execute("printf '%d' 42").expect("Failed to execute printf %d");
+        assert!(status.success(), "printf %d should succeed");
+    }
+
+    #[test]
+    fn test_builtin_printf_hex() {
+        let status = execute("printf '%x' 255").expect("Failed to execute printf %x");
+        assert!(status.success(), "printf %x should succeed");
+    }
+
+    #[test]
+    fn test_builtin_printf_octal() {
+        let status = execute("printf '%o' 8").expect("Failed to execute printf %o");
+        assert!(status.success(), "printf %o should succeed");
+    }
+
+    #[test]
+    fn test_builtin_printf_char() {
+        let status = execute("printf '%c' abc").expect("Failed to execute printf %c");
+        assert!(status.success(), "printf %c should succeed");
+    }
+
+    #[test]
+    fn test_builtin_printf_escape() {
+        let status = execute("printf '%b' 'hello\\nworld'").expect("Failed to execute printf %b");
+        assert!(status.success(), "printf %b should succeed");
+    }
+
+    #[test]
+    fn test_builtin_printf_format_string() {
+        let status = execute("printf 'Name: %s, Age: %d' John 30").expect("Failed to execute printf");
+        assert!(status.success(), "printf with format should succeed");
+    }
+
+    #[test]
+    fn test_builtin_printf_width() {
+        let status = execute("printf '%5s' hi").expect("Failed to execute printf width");
+        assert!(status.success(), "printf width should succeed");
+    }
+
+    #[test]
+    fn test_builtin_printf_left_align() {
+        let status = execute("printf '%-5s' hi").expect("Failed to execute printf left align");
+        assert!(status.success(), "printf left align should succeed");
+    }
+
+    #[test]
+    fn test_builtin_printf_precision() {
+        let status = execute("printf '%.2f' 3.14159").expect("Failed to execute printf precision");
+        assert!(status.success(), "printf precision should succeed");
+    }
+
+    #[test]
+    fn test_builtin_printf_width_and_precision() {
+        let status = execute("printf '%8.2f' 3.14159").expect("Failed to execute printf width+precision");
+        assert!(status.success(), "printf width and precision should succeed");
+    }
+
+    // ===== Alias Tests =====
+
+    #[test]
+    fn test_builtin_alias_define() {
+        let ast = parse("alias ll='ls -la'").expect("Failed to parse");
+        let mut executor = Executor::new();
+        let status = executor.execute(&ast).expect("Failed to execute alias");
+        assert!(status.success(), "alias definition should succeed");
+        assert_eq!(executor.aliases.get("ll"), Some(&"ls -la".to_string()));
+    }
+
+    #[test]
+    fn test_builtin_alias_list() {
+        let ast = parse("alias").expect("Failed to parse");
+        let mut executor = Executor::new();
+        // No aliases defined yet, should succeed with no output
+        let status = executor.execute(&ast).expect("Failed to list aliases");
+        assert!(status.success(), "alias list should succeed");
+    }
+
+    #[test]
+    fn test_builtin_alias_print() {
+        let ast = parse("alias ll='ls -la'").expect("Failed to parse");
+        let mut executor = Executor::new();
+        executor.execute(&ast).expect("Failed to define alias");
+
+        let ast = parse("alias ll").expect("Failed to parse");
+        let status = executor.execute(&ast).expect("Failed to print alias");
+        assert!(status.success(), "alias print should succeed");
+    }
+
+    #[test]
+    fn test_builtin_unalias() {
+        let ast = parse("alias ll='ls -la'").expect("Failed to parse");
+        let mut executor = Executor::new();
+        executor.execute(&ast).expect("Failed to define alias");
+        assert!(executor.aliases.contains_key("ll"));
+
+        let ast = parse("unalias ll").expect("Failed to parse");
+        let status = executor.execute(&ast).expect("Failed to unalias");
+        assert!(status.success(), "unalias should succeed");
+        assert!(!executor.aliases.contains_key("ll"));
+    }
+
+    #[test]
+    fn test_alias_expansion() {
+        // Define an alias that points to 'true' builtin
+        let ast = parse("alias t=true").expect("Failed to parse");
+        let mut executor = Executor::new();
+        executor.execute(&ast).expect("Failed to define alias");
+
+        // Now execute the alias - it should expand to 'true' and succeed
+        let ast = parse("t").expect("Failed to parse");
+        let status = executor.execute(&ast).expect("Failed to execute alias");
+        assert!(status.success(), "alias expansion should execute 'true' builtin");
+    }
+
+    #[test]
+    fn test_alias_expansion_with_args() {
+        // Define an alias for echo
+        let ast = parse("alias myecho='echo hello'").expect("Failed to parse");
+        let mut executor = Executor::new();
+        executor.execute(&ast).expect("Failed to define alias");
+
+        // Execute alias with additional args - should expand and pass args
+        let ast = parse("myecho world").expect("Failed to parse");
+        let status = executor.execute(&ast).expect("Failed to execute alias with args");
+        assert!(status.success(), "alias expansion with args should succeed");
+    }
+
+    #[test]
+    fn test_alias_recursion_protection() {
+        // Self-referencing alias should not cause infinite loop
+        let ast = parse("alias ls='ls -la'").expect("Failed to parse");
+        let mut executor = Executor::new();
+        executor.execute(&ast).expect("Failed to define alias");
+
+        // Should not hang - recursion is prevented
+        let ast = parse("ls").expect("Failed to parse");
+        // This will fail because 'ls' is not found, but should not hang
+        let _ = executor.execute(&ast);
+        // If we get here without hanging, the test passes
+    }
+
+    #[test]
+    fn test_alias_cycle_protection() {
+        // Cyclic aliases should not cause infinite loop
+        let ast = parse("alias a='b'; alias b='a'").expect("Failed to parse");
+        let mut executor = Executor::new();
+        executor.execute(&ast).expect("Failed to define aliases");
+
+        // Should not hang - cycle is detected
+        let ast = parse("a").expect("Failed to parse");
+        let _ = executor.execute(&ast);
+        // If we get here without hanging, the test passes
     }
 
     // ===== ExitStatus Tests =====
