@@ -2,12 +2,12 @@
 //!
 //! This module provides functionality to tokenize shell input into a stream of tokens.
 
-mod token;
 mod core;
+mod token;
 
 // Re-export public types from submodules
+pub use core::{tokenize, Lexer};
 pub use token::{LexError, Operator, Redirect, Token};
-pub use core::{Lexer, tokenize};
 
 #[cfg(test)]
 mod tests {
@@ -165,7 +165,10 @@ mod tests {
     fn test_whitespace_only() {
         let tokens = tokenize("   \t\n  ").unwrap();
         // Eof is no longer included in output - all whitespace is skipped, giving empty tokens
-        assert!(tokens.is_empty(), "Expected empty tokens for whitespace-only input");
+        assert!(
+            tokens.is_empty(),
+            "Expected empty tokens for whitespace-only input"
+        );
     }
 
     #[test]

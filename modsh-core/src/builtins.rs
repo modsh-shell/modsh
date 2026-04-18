@@ -69,7 +69,9 @@ pub fn get_builtin(name: &str) -> Option<BuiltinFn> {
 fn builtin_cd(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
     let target = if args.is_empty() {
         // No args: go to HOME
-        state.env.get("HOME")
+        state
+            .env
+            .get("HOME")
             .cloned()
             .unwrap_or_else(|| "/".to_string())
     } else {
@@ -85,21 +87,19 @@ fn builtin_cd(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
                 if let Some(old) = old_pwd {
                     state.env.insert("OLDPWD".to_string(), old);
                 }
-                state.env.insert("PWD".to_string(), cwd.to_string_lossy().to_string());
+                state
+                    .env
+                    .insert("PWD".to_string(), cwd.to_string_lossy().to_string());
             }
             Ok(super::executor::ExitStatus::SUCCESS)
         }
-        Err(e) => Err(BuiltinError::Generic(format!(
-            "cd: {}: {}",
-            target,
-            e
-        ))),
+        Err(e) => Err(BuiltinError::Generic(format!("cd: {}: {}", target, e))),
     }
 }
 
 /// Print working directory builtin
 #[allow(clippy::unnecessary_wraps)]
-fn builtin_pwd(_args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
+fn builtin_pwd(_args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     let cwd = std::env::current_dir().map_err(|e| BuiltinError::Generic(e.to_string()))?;
     println!("{}", cwd.display());
     Ok(super::executor::ExitStatus::SUCCESS)
@@ -139,7 +139,9 @@ fn builtin_echo(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
 /// Supports POSIX format specifiers with width/precision: %s, %d, %i, %o, %u, %x, %X, %f, %c, %b (escape), %%
 fn builtin_printf(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     if args.is_empty() {
-        return Err(BuiltinError::Generic("printf: missing format string".to_string()));
+        return Err(BuiltinError::Generic(
+            "printf: missing format string".to_string(),
+        ));
     }
 
     let format = args[0];
@@ -153,7 +155,7 @@ fn builtin_printf(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
             let mut width: Option<usize> = None;
             let mut precision: Option<usize> = None;
             let mut left_align = false;
-            let mut format_char = '\0';
+            let mut _format_char = '\0';
 
             // Parse flags
             while let Some(&c) = chars.peek() {
@@ -197,9 +199,9 @@ fn builtin_printf(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
             }
 
             // Get format character
-            format_char = chars.next().unwrap_or('\0');
+            _format_char = chars.next().unwrap_or('\0');
 
-            match format_char {
+            match _format_char {
                 '%' => {
                     output.push('%');
                 }
@@ -483,7 +485,10 @@ fn builtin_source(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     let path = args[0];
     // Verify file exists and is readable
     if !std::path::Path::new(path).exists() {
-        return Err(BuiltinError::Generic(format!("{}: No such file or directory", path)));
+        return Err(BuiltinError::Generic(format!(
+            "{}: No such file or directory",
+            path
+        )));
     }
 
     // Return Source error - the executor will handle actual execution
@@ -506,10 +511,10 @@ fn builtin_alias(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
             // Define alias - strip matching outer quotes if present
             let value = if value.starts_with('\'') && value.ends_with('\'') && value.len() > 1 {
                 // Strip single quotes
-                value[1..value.len()-1].to_string()
+                value[1..value.len() - 1].to_string()
             } else if value.starts_with('"') && value.ends_with('"') && value.len() > 1 {
                 // Strip double quotes
-                value[1..value.len()-1].to_string()
+                value[1..value.len() - 1].to_string()
             } else {
                 value.to_string()
             };
@@ -531,7 +536,9 @@ fn builtin_alias(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
 #[allow(clippy::unnecessary_wraps)]
 fn builtin_unalias(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
     if args.is_empty() {
-        return Err(BuiltinError::Generic("unalias: usage: unalias [-a] name [name ...]".to_string()));
+        return Err(BuiltinError::Generic(
+            "unalias: usage: unalias [-a] name [name ...]".to_string(),
+        ));
     }
 
     if args[0] == "-a" {
@@ -576,7 +583,12 @@ fn builtin_set(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
                     'x' => state.options.xtrace = true,
                     'u' => state.options.nounset = true,
                     'f' => state.options.noglob = true,
-                    _ => return Err(BuiltinError::Generic(format!("set: invalid option: -{}", c))),
+                    _ => {
+                        return Err(BuiltinError::Generic(format!(
+                            "set: invalid option: -{}",
+                            c
+                        )))
+                    }
                 }
             }
         } else if arg.starts_with('+') && arg.len() > 1 {
@@ -588,7 +600,12 @@ fn builtin_set(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
                     'x' => state.options.xtrace = false,
                     'u' => state.options.nounset = false,
                     'f' => state.options.noglob = false,
-                    _ => return Err(BuiltinError::Generic(format!("set: invalid option: +{}", c))),
+                    _ => {
+                        return Err(BuiltinError::Generic(format!(
+                            "set: invalid option: +{}",
+                            c
+                        )))
+                    }
                 }
             }
         } else {
@@ -611,7 +628,9 @@ fn builtin_shift(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
     };
 
     if n > state.positional_params.len() {
-        return Err(BuiltinError::Generic("shift: can't shift that many".to_string()));
+        return Err(BuiltinError::Generic(
+            "shift: can't shift that many".to_string(),
+        ));
     }
 
     // Remove first n elements
@@ -663,16 +682,16 @@ fn evaluate_test(args: &[&str]) -> bool {
         let op = args[0];
         let operand = &args[1];
         return match op {
-            "-n" => !operand.is_empty(),           // non-zero length
-            "-z" => operand.is_empty(),             // zero length
-            "-e" => std::path::Path::new(operand).exists(), // file exists
-            "-f" => std::path::Path::new(operand).is_file(),  // regular file
-            "-d" => std::path::Path::new(operand).is_dir(),   // directory
-            "-r" => is_readable(operand),           // readable
-            "-w" => is_writable(operand),           // writable
-            "-x" => is_executable(operand),          // executable
-            "-s" => has_size(operand),               // size > 0
-            "-L" => is_symlink(operand),              // is symlink
+            "-n" => !operand.is_empty(),                     // non-zero length
+            "-z" => operand.is_empty(),                      // zero length
+            "-e" => std::path::Path::new(operand).exists(),  // file exists
+            "-f" => std::path::Path::new(operand).is_file(), // regular file
+            "-d" => std::path::Path::new(operand).is_dir(),  // directory
+            "-r" => is_readable(operand),                    // readable
+            "-w" => is_writable(operand),                    // writable
+            "-x" => is_executable(operand),                  // executable
+            "-s" => has_size(operand),                       // size > 0
+            "-L" => is_symlink(operand),                     // is symlink
             _ => false,
         };
     }
@@ -684,8 +703,8 @@ fn evaluate_test(args: &[&str]) -> bool {
         let right = args[2];
 
         return match op {
-            "=" | "==" => left == right,           // string equal
-            "!=" => left != right,                  // string not equal
+            "=" | "==" => left == right,                          // string equal
+            "!=" => left != right,                                // string not equal
             "-eq" => compare_numeric(left, right, |a, b| a == b), // numeric equal
             "-ne" => compare_numeric(left, right, |a, b| a != b), // numeric not equal
             "-lt" => compare_numeric(left, right, |a, b| a < b),  // less than
@@ -785,7 +804,9 @@ fn builtin_read(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
                     has_prompt = true;
                     i += 2;
                 } else {
-                    return Err(BuiltinError::Generic("read: -p: option requires an argument".to_string()));
+                    return Err(BuiltinError::Generic(
+                        "read: -p: option requires an argument".to_string(),
+                    ));
                 }
             }
             "-r" => {
@@ -807,7 +828,10 @@ fn builtin_read(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
             _ => {
                 if args[i].starts_with('-') {
                     // Unknown option
-                    return Err(BuiltinError::Generic(format!("read: invalid option: {}", args[i])));
+                    return Err(BuiltinError::Generic(format!(
+                        "read: invalid option: {}",
+                        args[i]
+                    )));
                 }
                 // This is a variable name
                 var_names.push(args[i]);
@@ -882,7 +906,9 @@ fn builtin_trap(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     #[cfg(not(unix))]
     {
         // Not supported on non-Unix platforms
-        return Err(BuiltinError::Generic("trap: signal handling not supported on this platform".to_string()));
+        return Err(BuiltinError::Generic(
+            "trap: signal handling not supported on this platform".to_string(),
+        ));
     }
 
     #[cfg(unix)]
@@ -892,29 +918,32 @@ fn builtin_trap(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
 
         // Signal name to number mapping (POSIX signals)
         let signals: HashMap<&str, i32> = [
-            ("EXIT", 0),     // Special: exit handler
-            ("HUP", 1),      // SIGHUP
-            ("INT", 2),      // SIGINT
-            ("QUIT", 3),     // SIGQUIT
-            ("ILL", 4),      // SIGILL
-            ("TRAP", 5),     // SIGTRAP
-            ("ABRT", 6),     // SIGABRT
-            ("FPE", 8),      // SIGFPE
-            ("KILL", 9),     // SIGKILL
-            ("BUS", 7),      // SIGBUS
-            ("SEGV", 11),    // SIGSEGV
-            ("PIPE", 13),    // SIGPIPE
-            ("ALRM", 14),    // SIGALRM
-            ("TERM", 15),    // SIGTERM
-            ("USR1", 10),    // SIGUSR1
-            ("USR2", 12),    // SIGUSR2
-            ("CHLD", 17),    // SIGCHLD
-            ("CONT", 18),    // SIGCONT
-            ("STOP", 19),    // SIGSTOP
-            ("TSTP", 20),    // SIGTSTP
-            ("TTIN", 21),    // SIGTTIN
-            ("TTOU", 22),    // SIGTTOU
-        ].iter().cloned().collect();
+            ("EXIT", 0),  // Special: exit handler
+            ("HUP", 1),   // SIGHUP
+            ("INT", 2),   // SIGINT
+            ("QUIT", 3),  // SIGQUIT
+            ("ILL", 4),   // SIGILL
+            ("TRAP", 5),  // SIGTRAP
+            ("ABRT", 6),  // SIGABRT
+            ("FPE", 8),   // SIGFPE
+            ("KILL", 9),  // SIGKILL
+            ("BUS", 7),   // SIGBUS
+            ("SEGV", 11), // SIGSEGV
+            ("PIPE", 13), // SIGPIPE
+            ("ALRM", 14), // SIGALRM
+            ("TERM", 15), // SIGTERM
+            ("USR1", 10), // SIGUSR1
+            ("USR2", 12), // SIGUSR2
+            ("CHLD", 17), // SIGCHLD
+            ("CONT", 18), // SIGCONT
+            ("STOP", 19), // SIGSTOP
+            ("TSTP", 20), // SIGTSTP
+            ("TTIN", 21), // SIGTTIN
+            ("TTOU", 22), // SIGTTOU
+        ]
+        .iter()
+        .cloned()
+        .collect();
 
         if args.is_empty() {
             // List current traps (not implemented - would need trap registry)
@@ -923,7 +952,7 @@ fn builtin_trap(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
 
         // Check for -l (list signals)
         if args[0] == "-l" {
-            for (name, num) in signals.iter() {
+            for (name, _num) in signals.iter() {
                 println!("{})", name);
             }
             return Ok(super::executor::ExitStatus::SUCCESS);

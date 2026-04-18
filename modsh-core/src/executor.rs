@@ -243,7 +243,8 @@ impl Executor {
         func_def: &crate::parser::FunctionDefinition,
     ) -> Result<ExitStatus, ExecError> {
         // Register the function in the function table
-        self.functions.insert(func_def.name.clone(), func_def.clone());
+        self.functions
+            .insert(func_def.name.clone(), func_def.clone());
         Ok(ExitStatus::SUCCESS)
     }
 
@@ -254,9 +255,12 @@ impl Executor {
         _args: &[String],
     ) -> Result<ExitStatus, ExecError> {
         // Get the function definition and clone the body to avoid borrow issues
-        let body = self.functions.get(name)
+        let body = self
+            .functions
+            .get(name)
             .ok_or_else(|| ExecError::CommandNotFound(name.to_string()))?
-            .body.clone();
+            .body
+            .clone();
 
         // Save current positional parameters (if any)
         // For now, we don't implement $1, $2, etc. but this is where we'd set them
@@ -606,7 +610,9 @@ impl Executor {
                 // Return error propagates up - will be caught by function call handler
                 // or become an error if used outside of function
                 Err(crate::builtins::BuiltinError::Return(code)) => {
-                    return Err(ExecError::Builtin(crate::builtins::BuiltinError::Return(code)));
+                    return Err(ExecError::Builtin(crate::builtins::BuiltinError::Return(
+                        code,
+                    )));
                 }
                 Err(e) => return Err(ExecError::Builtin(e)),
             }
@@ -787,7 +793,10 @@ impl Executor {
 
     /// Execute pipeline with only external commands (original implementation)
     #[cfg(not(unix))]
-    fn execute_pipeline_external_only(&mut self, commands: &[Command]) -> Result<ExitStatus, ExecError> {
+    fn execute_pipeline_external_only(
+        &mut self,
+        commands: &[Command],
+    ) -> Result<ExitStatus, ExecError> {
         let mut last_stdout: Option<std::process::ChildStdout> = None;
         let mut children: Vec<std::process::Child> = Vec::new();
 
@@ -811,9 +820,10 @@ impl Executor {
 
             // Check if it's a builtin - if so, we can't run it in this external-only path
             if crate::builtins::get_builtin(program).is_some() {
-                return Err(ExecError::CommandNotFound(
-                    format!("builtin '{}' not supported in pipeline on this platform", program)
-                ));
+                return Err(ExecError::CommandNotFound(format!(
+                    "builtin '{}' not supported in pipeline on this platform",
+                    program
+                )));
             }
 
             let program_path = self.find_in_path(program)?;
@@ -865,8 +875,7 @@ impl Executor {
     /// Execute a sourced script file
     fn execute_source(&mut self, path: &str) -> Result<ExitStatus, ExecError> {
         // Check file metadata
-        let metadata = std::fs::metadata(path)
-            .map_err(|e| ExecError::Io(e))?;
+        let metadata = std::fs::metadata(path).map_err(|e| ExecError::Io(e))?;
 
         // Ensure it's a file (not a directory)
         if !metadata.is_file() {
@@ -877,12 +886,11 @@ impl Executor {
         }
 
         // Read the script content
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| ExecError::Io(e))?;
+        let content = std::fs::read_to_string(path).map_err(|e| ExecError::Io(e))?;
 
         // Parse the script
-        let ast = crate::parser::parse(&content)
-            .map_err(|e| ExecError::ParseError(e.to_string()))?;
+        let ast =
+            crate::parser::parse(&content).map_err(|e| ExecError::ParseError(e.to_string()))?;
 
         // Execute the parsed script
         self.execute(&ast)
@@ -1042,7 +1050,10 @@ mod tests {
     #[test]
     fn test_list_uses_last_status() {
         let status = execute("true ; false").expect("Failed to execute");
-        assert!(!status.success(), "true ; false should use last exit status");
+        assert!(
+            !status.success(),
+            "true ; false should use last exit status"
+        );
         assert_eq!(status.code, 1);
     }
 
@@ -1064,7 +1075,10 @@ mod tests {
     #[test]
     fn test_pipeline_with_false_at_end() {
         let status = execute("true | false").expect("Failed to execute pipeline");
-        assert!(!status.success(), "true | false should return false's status");
+        assert!(
+            !status.success(),
+            "true | false should return false's status"
+        );
     }
 
     #[test]
@@ -1179,7 +1193,8 @@ mod tests {
 
     #[test]
     fn test_builtin_printf_format_string() {
-        let status = execute("printf 'Name: %s, Age: %d' John 30").expect("Failed to execute printf");
+        let status =
+            execute("printf 'Name: %s, Age: %d' John 30").expect("Failed to execute printf");
         assert!(status.success(), "printf with format should succeed");
     }
 
@@ -1203,8 +1218,12 @@ mod tests {
 
     #[test]
     fn test_builtin_printf_width_and_precision() {
-        let status = execute("printf '%8.2f' 3.14159").expect("Failed to execute printf width+precision");
-        assert!(status.success(), "printf width and precision should succeed");
+        let status =
+            execute("printf '%8.2f' 3.14159").expect("Failed to execute printf width+precision");
+        assert!(
+            status.success(),
+            "printf width and precision should succeed"
+        );
     }
 
     // ===== Alias Tests =====
@@ -1261,7 +1280,10 @@ mod tests {
         // Now execute the alias - it should expand to 'true' and succeed
         let ast = parse("t").expect("Failed to parse");
         let status = executor.execute(&ast).expect("Failed to execute alias");
-        assert!(status.success(), "alias expansion should execute 'true' builtin");
+        assert!(
+            status.success(),
+            "alias expansion should execute 'true' builtin"
+        );
     }
 
     #[test]
@@ -1273,7 +1295,9 @@ mod tests {
 
         // Execute alias with additional args - should expand and pass args
         let ast = parse("myecho world").expect("Failed to parse");
-        let status = executor.execute(&ast).expect("Failed to execute alias with args");
+        let status = executor
+            .execute(&ast)
+            .expect("Failed to execute alias with args");
         assert!(status.success(), "alias expansion with args should succeed");
     }
 
@@ -1347,7 +1371,11 @@ mod tests {
         let mut executor = Executor::new();
         let status = executor.execute(&ast).expect("Failed to execute set");
         assert!(status.success(), "set should succeed");
-        assert_eq!(executor.positional_params.len(), 3, "Should have 3 positional params");
+        assert_eq!(
+            executor.positional_params.len(),
+            3,
+            "Should have 3 positional params"
+        );
         assert_eq!(executor.positional_params[0], "arg1");
         assert_eq!(executor.positional_params[1], "arg2");
         assert_eq!(executor.positional_params[2], "arg3");
@@ -1360,7 +1388,11 @@ mod tests {
         let mut executor = Executor::new();
         let status = executor.execute(&ast).expect("Failed to execute");
         assert!(status.success(), "shift should succeed");
-        assert_eq!(executor.positional_params.len(), 2, "Should have 2 positional params after shift");
+        assert_eq!(
+            executor.positional_params.len(),
+            2,
+            "Should have 2 positional params after shift"
+        );
         assert_eq!(executor.positional_params[0], "arg2");
         assert_eq!(executor.positional_params[1], "arg3");
     }
@@ -1372,7 +1404,11 @@ mod tests {
         let mut executor = Executor::new();
         let status = executor.execute(&ast).expect("Failed to execute");
         assert!(status.success(), "shift 2 should succeed");
-        assert_eq!(executor.positional_params.len(), 3, "Should have 3 positional params after shift 2");
+        assert_eq!(
+            executor.positional_params.len(),
+            3,
+            "Should have 3 positional params after shift 2"
+        );
         assert_eq!(executor.positional_params[0], "c");
     }
 
@@ -1395,7 +1431,10 @@ mod tests {
         let ast = parse("set -e; set +e").expect("Failed to parse");
         let mut executor = Executor::new();
         executor.execute(&ast).expect("Failed to execute set");
-        assert!(!executor.shell_options.errexit, "errexit should be disabled");
+        assert!(
+            !executor.shell_options.errexit,
+            "errexit should be disabled"
+        );
     }
 
     // ===== Test Builtin Tests =====
@@ -1530,14 +1569,20 @@ mod tests {
     #[test]
     fn test_executor_new() {
         let executor = Executor::new();
-        assert!(!executor.env.is_empty(), "Executor should inherit environment");
+        assert!(
+            !executor.env.is_empty(),
+            "Executor should inherit environment"
+        );
         assert!(executor.cwd.exists(), "Executor should have valid cwd");
     }
 
     #[test]
     fn test_executor_default() {
         let executor: Executor = Default::default();
-        assert!(!executor.env.is_empty(), "Default executor should inherit environment");
+        assert!(
+            !executor.env.is_empty(),
+            "Default executor should inherit environment"
+        );
     }
 
     #[test]
@@ -1582,7 +1627,10 @@ mod tests {
 
         // Background returns success immediately
         let status = execute("sleep 0.1 &").expect("Failed to execute background");
-        assert!(status.success(), "Background command should return success immediately");
+        assert!(
+            status.success(),
+            "Background command should return success immediately"
+        );
 
         // Small delay to let previous background process start
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1593,7 +1641,10 @@ mod tests {
         let _ = executor.execute(&ast).expect("Failed to execute");
         std::thread::sleep(std::time::Duration::from_millis(50));
         let jobs = executor.job_control().list_jobs();
-        assert!(!jobs.is_empty(), "Background job should be added to job control");
+        assert!(
+            !jobs.is_empty(),
+            "Background job should be added to job control"
+        );
 
         // Delay before next test
         std::thread::sleep(std::time::Duration::from_millis(100));

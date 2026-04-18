@@ -270,17 +270,24 @@ impl Parser {
                     return false;
                 }
                 // Find last meaningful token before EOF
-                let last_meaningful = self.tokens.iter().rev().find(|t| {
-                    !matches!(t, Token::Eof | Token::Comment(_))
-                });
+                let last_meaningful = self
+                    .tokens
+                    .iter()
+                    .rev()
+                    .find(|t| !matches!(t, Token::Eof | Token::Comment(_)));
 
                 if let Some(token) = last_meaningful {
                     // If we ended on an opening keyword without its closing keyword,
                     // or an operator expecting continuation, it's incomplete
-                    let opening_keywords = ["if", "then", "elif", "else", "for", "while", "case", "in", "do"];
+                    let opening_keywords = [
+                        "if", "then", "elif", "else", "for", "while", "case", "in", "do",
+                    ];
                     let continuation_ops = [
-                        Operator::Pipe, Operator::And, Operator::Or,
-                        Operator::LBrace, Operator::LParen,
+                        Operator::Pipe,
+                        Operator::And,
+                        Operator::Or,
+                        Operator::LBrace,
+                        Operator::LParen,
                     ];
 
                     if Self::is_word_token(token) {
@@ -327,7 +334,10 @@ impl Parser {
             ) => true,
             // Compound command keywords that need closing
             token if Self::is_word_token(token) => {
-                matches!(Self::word_value(token).unwrap_or(""), "if" | "while" | "for" | "case" | "function")
+                matches!(
+                    Self::word_value(token).unwrap_or(""),
+                    "if" | "while" | "for" | "case" | "function"
+                )
             }
             _ => false,
         }
@@ -371,7 +381,12 @@ impl Parser {
 
         match self.peek() {
             // Stop if we hit a terminator word or operator
-            token if Self::is_word_token(token) && terminators.contains(&Self::word_value(token).unwrap_or("")) => Ok(left),
+            token
+                if Self::is_word_token(token)
+                    && terminators.contains(&Self::word_value(token).unwrap_or("")) =>
+            {
+                Ok(left)
+            }
             Token::Operator(Operator::RBrace) if terminators.contains(&"}") => Ok(left),
             Token::Operator(Operator::RParen) if terminators.contains(&")") => Ok(left),
             Token::Operator(Operator::Semicolon) if terminators.contains(&";") => Ok(left),
@@ -411,7 +426,12 @@ impl Parser {
         loop {
             match self.peek() {
                 // Stop at terminator words
-                token if Self::is_word_token(token) && terminators.contains(&Self::word_value(token).unwrap_or("")) => break,
+                token
+                    if Self::is_word_token(token)
+                        && terminators.contains(&Self::word_value(token).unwrap_or("")) =>
+                {
+                    break
+                }
                 Token::Operator(Operator::And) => {
                     self.advance();
                     let right = self.parse_pipeline_until(terminators)?;
@@ -547,12 +567,13 @@ impl Parser {
         self.expect_word("for")?;
         let var = self.expect_word_value()?;
 
-        let words = if Self::is_word_token(self.peek()) && Self::word_value(self.peek()) == Some("in") {
-            self.advance();
-            Some(self.parse_for_words()) // Some([]) = explicit empty list, Some(words) = explicit list
-        } else {
-            None // No "in" clause means iterate over "$@"
-        };
+        let words =
+            if Self::is_word_token(self.peek()) && Self::word_value(self.peek()) == Some("in") {
+                self.advance();
+                Some(self.parse_for_words()) // Some([]) = explicit empty list, Some(words) = explicit list
+            } else {
+                None // No "in" clause means iterate over "$@"
+            };
 
         self.expect_word("do")?;
         let body = Box::new(self.parse_list_until(&["done"])?);
@@ -566,7 +587,9 @@ impl Parser {
         let mut words = Vec::new();
         loop {
             match self.peek() {
-                token if Self::is_word_token(token) && Self::word_value(token) == Some("do") => break,
+                token if Self::is_word_token(token) && Self::word_value(token) == Some("do") => {
+                    break
+                }
                 Token::Operator(Operator::Semicolon) => {
                     self.advance();
                     break;
@@ -665,7 +688,12 @@ impl Parser {
                 _ => return Ok(None),
             }
         }
-        if peek_pos >= self.tokens.len() || !matches!(self.tokens.get(peek_pos), Some(Token::Operator(Operator::LParen))) {
+        if peek_pos >= self.tokens.len()
+            || !matches!(
+                self.tokens.get(peek_pos),
+                Some(Token::Operator(Operator::LParen))
+            )
+        {
             return Ok(None);
         }
 
@@ -809,7 +837,10 @@ impl Parser {
 
     /// Check if token is a word-like token (Word, SingleQuoted, or DoubleQuoted)
     fn is_word_token(token: &Token) -> bool {
-        matches!(token, Token::Word(_) | Token::SingleQuoted(_) | Token::DoubleQuoted(_))
+        matches!(
+            token,
+            Token::Word(_) | Token::SingleQuoted(_) | Token::DoubleQuoted(_)
+        )
     }
 
     /// Extract the string value from a word-like token
@@ -886,8 +917,12 @@ impl Parser {
             }
             LRedirect::Herestring { fd, word } => (fd, RedirectKind::Herestring, word),
             LRedirect::ReadWrite { fd } => (fd, RedirectKind::ReadWrite, String::new()),
-            LRedirect::OutputStdoutStderr => (None, RedirectKind::OutputStdoutStderr, String::new()),
-            LRedirect::AppendStdoutStderr => (None, RedirectKind::AppendStdoutStderr, String::new()),
+            LRedirect::OutputStdoutStderr => {
+                (None, RedirectKind::OutputStdoutStderr, String::new())
+            }
+            LRedirect::AppendStdoutStderr => {
+                (None, RedirectKind::AppendStdoutStderr, String::new())
+            }
         };
 
         if needs_target {
@@ -898,11 +933,7 @@ impl Parser {
                 // Advance past the redirect token AND the target word
                 self.advance(); // consume redirect
                 self.advance(); // consume target
-                Ok(Redirect {
-                    fd,
-                    kind,
-                    target,
-                })
+                Ok(Redirect { fd, kind, target })
             } else {
                 // Just consume the redirect token, error on missing target
                 self.advance();
@@ -951,8 +982,7 @@ impl Parser {
 /// # Errors
 /// Returns an error if the input contains invalid syntax
 pub fn parse(input: &str) -> Result<Command, ParseError> {
-    let tokens = crate::lexer::tokenize(input)
-        .map_err(|e| ParseError::Lex(e.to_string()))?;
+    let tokens = crate::lexer::tokenize(input).map_err(|e| ParseError::Lex(e.to_string()))?;
     let mut parser = Parser::new(tokens);
     parser.parse()
 }
@@ -1016,7 +1046,10 @@ mod tests {
         match cmd {
             Command::For(for_loop) => {
                 assert_eq!(for_loop.var, "i");
-                assert_eq!(for_loop.words, Some(vec!["a".to_string(), "b".to_string(), "c".to_string()]));
+                assert_eq!(
+                    for_loop.words,
+                    Some(vec!["a".to_string(), "b".to_string(), "c".to_string()])
+                );
             }
             _ => panic!("Expected for command"),
         }

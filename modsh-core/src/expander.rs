@@ -73,35 +73,62 @@ impl<'a> Expander<'a> {
     }
 
     /// Expand a word according to POSIX rules
-    /// Expand a word with variable and special character expansion
     ///
     /// # Errors
     /// Returns an error if parameter expansion is invalid
     pub fn expand(&mut self, word: &str) -> Result<Vec<String>, ExpandError> {
-        // TODO: Full POSIX expansion
-        // 1. Tilde expansion (~, ~user)
+        self.expand_internal(word, false)
+    }
+
+    /// Internal expansion with quoting context tracking
+    ///
+    /// `quoted` indicates whether the word was originally quoted (single or double quotes),
+    /// which affects:
+    /// - Glob expansion: quoted words suppress glob expansion
+    /// - Backslash handling: depends on quote type
+    ///
+    /// # Errors
+    /// Returns an error if parameter expansion is invalid
+    fn expand_internal(&mut self, word: &str, quoted: bool) -> Result<Vec<String>, ExpandError> {
+        // POSIX expansion order:
+        // 1. Tilde expansion (~, ~user) - only on literal word prefix, NOT on parameter values
         // 2. Parameter expansion ($VAR, ${VAR}, ${VAR:-default}, etc.)
         // 3. Command substitution ($(cmd), `cmd`)
         // 4. Arithmetic expansion ($((expr)))
         // 5. Word splitting
-        // 6. Glob/pathname expansion
+        // 6. Glob/pathname expansion (suppressed for quoted words)
 
-        let expanded = self.expand_parameters(word)?;
+        // Step 1: Tilde expansion on the original word (before parameter expansion)
         let home = self.env.get("HOME").map(std::string::ToString::to_string);
-        let expanded = Self::expand_tilde(&expanded, home.as_deref());
+        let after_tilde = Self::expand_tilde(word, home.as_deref());
 
-        // Word splitting based on IFS
+        // Step 2: Parameter, command, and arithmetic expansion (with backslash handling)
+        let after_params = self.expand_parameters(&after_tilde, quoted)?;
+
+        // Step 3: Word splitting based on IFS
         let ifs = self.env.get("IFS").unwrap_or(" \t\n");
-        let words = Self::split_words(&expanded, ifs);
+        let words = Self::split_words(&after_params, ifs);
 
-        // Glob/pathname expansion
-        let mut globbed = Vec::new();
-        for word in words {
-            let matches = Self::expand_glob(&word)?;
-            globbed.extend(matches);
+        // Step 4: Glob/pathname expansion (skip if word was originally quoted)
+        if quoted {
+            // Quoted words suppress glob expansion
+            Ok(words)
+        } else {
+            let mut globbed = Vec::new();
+            for w in words {
+                let matches = Self::expand_glob(&w)?;
+                globbed.extend(matches);
+            }
+            Ok(globbed)
         }
+    }
 
-        Ok(globbed)
+    /// Expand a word with explicit quoting context for nested expansion
+    ///
+    /// # Errors
+    /// Returns an error if parameter expansion is invalid
+    pub fn expand_quoted(&mut self, word: &str) -> Result<Vec<String>, ExpandError> {
+        self.expand_internal(word, true)
     }
 
     /// Expand glob patterns into matching filenames
@@ -137,47 +164,125 @@ impl<'a> Expander<'a> {
     }
 
     /// Split a string into words based on IFS (Internal Field Separator)
+    ///
+    /// POSIX rules:
+    /// - IFS whitespace (space, tab, newline) are field terminators - consecutive ones collapse
+    /// - IFS non-whitespace are field separators - each delimits a field, empty fields preserved
+    /// - Empty input produces no fields (not a single empty field)
     fn split_words(s: &str, ifs: &str) -> Vec<String> {
         if ifs.is_empty() {
             // Empty IFS means no splitting
-            return vec![s.to_string()];
+            return if s.is_empty() {
+                // Empty string with empty IFS produces no fields
+                vec![]
+            } else {
+                vec![s.to_string()]
+            };
         }
 
-        // Empty string expands to a single empty word
+        // Empty input produces no fields
         if s.is_empty() {
-            return vec![String::new()];
+            return vec![];
         }
+
+        // Separate IFS whitespace characters (field terminators that collapse)
+        let ifs_whitespace: String = ifs.chars().filter(|c| c.is_ascii_whitespace()).collect();
 
         let mut words = Vec::new();
         let mut current = String::new();
+        let mut prev_was_non_ws_ifs = false;
 
         for ch in s.chars() {
             if ifs.contains(ch) {
-                // IFS character - end current word if any
-                if !current.is_empty() {
-                    words.push(current);
-                    current = String::new();
+                // This is an IFS character
+                let is_whitespace = ifs_whitespace.contains(ch);
+
+                if is_whitespace {
+                    // IFS whitespace is a field terminator - consecutive ones collapse
+                    if !current.is_empty() {
+                        words.push(current);
+                        current = String::new();
+                    }
+                    // Skip consecutive whitespace (they collapse)
+                    prev_was_non_ws_ifs = false;
+                } else {
+                    // IFS non-whitespace is a field separator
+                    // Each separator delimits a field - empty fields are preserved
+                    if !current.is_empty() {
+                        // We have content - push it
+                        words.push(current);
+                        current = String::new();
+                    }
+                    // If previous was also a non-whitespace separator, this is consecutive
+                    // so we need to add an empty field
+                    if prev_was_non_ws_ifs {
+                        words.push(String::new());
+                    }
+                    prev_was_non_ws_ifs = true;
                 }
             } else {
                 // Non-IFS character
                 current.push(ch);
+                prev_was_non_ws_ifs = false;
             }
         }
 
         // Don't forget the last word
-        if !current.is_empty() {
+        if !current.is_empty() || prev_was_non_ws_ifs {
+            // If last char was a non-whitespace IFS, add empty field
             words.push(current);
+        }
+
+        // Remove trailing empty field if it was added due to trailing separator
+        // (but preserve internal empty fields)
+        while words.len() > 1 && words.last().map_or(false, |w| w.is_empty()) {
+            // Only remove if the second-to-last was also from a separator
+            // Actually, POSIX says trailing separators don't create empty fields
+            // at the end unless there were consecutive separators earlier
+            let _ = words.pop();
         }
 
         words
     }
 
-    fn expand_parameters(&mut self, word: &str) -> Result<String, ExpandError> {
+    fn expand_parameters(&mut self, word: &str, _quoted: bool) -> Result<String, ExpandError> {
         let mut result = String::new();
         let mut chars = word.chars().peekable();
 
         while let Some(ch) = chars.next() {
             match ch {
+                '\\' => {
+                    // Backslash escape handling
+                    // \$ -> literal $, \` -> literal `, \\ -> literal \, \" -> literal "
+                    match chars.peek() {
+                        Some(&'$') => {
+                            chars.next();
+                            result.push('$');
+                        }
+                        Some(&'`') => {
+                            chars.next();
+                            result.push('`');
+                        }
+                        Some(&'\\') => {
+                            chars.next();
+                            result.push('\\');
+                        }
+                        Some(&'"') => {
+                            chars.next();
+                            result.push('"');
+                        }
+                        Some(&c) => {
+                            // Unknown escape sequence - preserve backslash and char
+                            result.push('\\');
+                            result.push(c);
+                            chars.next();
+                        }
+                        None => {
+                            // Trailing backslash
+                            result.push('\\');
+                        }
+                    }
+                }
                 '$' => {
                     // Parameter expansion, command substitution $(...), or arithmetic $((...))
                     match chars.peek() {
@@ -246,7 +351,7 @@ impl<'a> Expander<'a> {
         chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
     ) -> Result<String, ExpandError> {
         let mut expr = String::new();
-        let mut depth = 1; // Track nesting for parentheses
+        let mut depth = 0; // Track nesting for parentheses (0 = base level inside $(( )))
 
         while let Some(&ch) = chars.peek() {
             chars.next();
@@ -255,17 +360,20 @@ impl<'a> Expander<'a> {
                 depth += 1;
                 expr.push(ch);
             } else if ch == ')' {
-                depth -= 1;
                 if depth == 0 {
-                    // Check for second )
+                    // At base level, ) could be the start of )) terminator
                     if chars.peek() == Some(&')') {
                         chars.next(); // consume second )
                         return Ok(expr);
                     }
-                    // Single ) in arithmetic context - keep looking
-                    depth = 1;
+                    // Single ) at base level without following ) - include in expr
+                    // (This handles expressions like $((a)) where inner ) is part of expr)
+                    expr.push(ch);
+                } else {
+                    // Nested level - decrease depth and include )
+                    depth -= 1;
+                    expr.push(ch);
                 }
-                expr.push(ch);
             } else {
                 expr.push(ch);
             }
@@ -503,9 +611,10 @@ impl<'a> Expander<'a> {
         let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
 
         // POSIX: Strip trailing newlines from command output
-        while stdout.ends_with('\n') {
-            stdout.pop();
-        }
+        // Also strip \r for Windows-style line endings (\r\n)
+        stdout = stdout
+            .trim_end_matches(|c| c == '\n' || c == '\r')
+            .to_string();
 
         Ok(stdout)
     }
@@ -544,8 +653,7 @@ impl<'a> Expander<'a> {
 
     fn expand_braced(&mut self, name: &str) -> Result<String, ExpandError> {
         // Check for special syntax like ${VAR:-default}
-        // The name may include trailing } which we need to strip
-        let name = name.strip_suffix('}').unwrap_or(name);
+        // The name comes from read_braced_name which already consumed the closing }
 
         // Check for colon-prefix operators (:-, :=, :?, :+)
         // These treat empty string as unset
@@ -691,23 +799,36 @@ impl<'a> Expander<'a> {
     }
 
     /// Look up a user's home directory (Unix only)
+    /// Uses thread-safe getpwnam_r instead of getpwnam
     #[cfg(unix)]
     #[cfg_attr(not(unix), allow(dead_code))]
     fn get_user_home(username: &str) -> Option<String> {
-        use libc::getpwnam;
+        use libc::{c_char, getpwnam_r, passwd};
         use std::ffi::{CStr, CString};
 
         let c_username = CString::new(username).ok()?;
-        let pw = unsafe { getpwnam(c_username.as_ptr()) };
 
-        if pw.is_null() {
+        // Allocate buffer for the result (getpwnam_r needs this)
+        let mut buf = vec![0u8; 4096];
+        let mut result: *mut passwd = std::ptr::null_mut();
+        let mut pw: passwd = unsafe { std::mem::zeroed() };
+
+        let ret = unsafe {
+            getpwnam_r(
+                c_username.as_ptr(),
+                &mut pw,
+                buf.as_mut_ptr() as *mut c_char,
+                buf.len(),
+                &mut result,
+            )
+        };
+
+        if ret != 0 || result.is_null() {
             return None;
         }
 
-        let home_dir = unsafe {
-            let pw = &*pw;
-            CStr::from_ptr(pw.pw_dir).to_str().ok()?.to_string()
-        };
+        // pw_dir is now valid and points into our buffer
+        let home_dir = unsafe { CStr::from_ptr(pw.pw_dir).to_str().ok()?.to_string() };
 
         Some(home_dir)
     }
@@ -847,10 +968,11 @@ mod tests {
         assert_eq!(result, vec!["default"]);
 
         // Set to empty - should use empty (not default) without colon
+        // Empty string produces no fields after word splitting
         env.set("FOO".to_string(), "".to_string());
         let mut expander = Expander::new(&mut env);
         let result = expander.expand("${FOO-default}").unwrap();
-        assert_eq!(result, vec![""]);
+        assert_eq!(result, Vec::<String>::new());
     }
 
     #[test]
@@ -889,10 +1011,11 @@ mod tests {
         assert_eq!(env.get("FOO"), Some("assigned"));
 
         // Set to empty - should NOT assign without colon
+        // Empty string produces no fields after word splitting
         env.set("FOO".to_string(), "".to_string());
         let mut expander = Expander::new(&mut env);
         let result = expander.expand("${FOO=reassigned}").unwrap();
-        assert_eq!(result, vec![""]);
+        assert_eq!(result, Vec::<String>::new());
         assert_eq!(env.get("FOO"), Some(""));
     }
 
@@ -928,10 +1051,11 @@ mod tests {
         assert!(result.is_err());
 
         // Set to empty - should NOT error without colon
+        // Empty string produces no fields after word splitting
         env.set("FOO".to_string(), "".to_string());
         let mut expander = Expander::new(&mut env);
         let result = expander.expand("${FOO?error message}").unwrap();
-        assert_eq!(result, vec![""]);
+        assert_eq!(result, Vec::<String>::new());
     }
 
     #[test]
@@ -941,13 +1065,14 @@ mod tests {
 
         let mut expander = Expander::new(&mut env);
         let result = expander.expand("${FOO:+alternate}").unwrap();
-        assert_eq!(result, vec![""]);
+        // Empty string produces no fields after word splitting
+        assert_eq!(result, Vec::<String>::new());
 
         // Set to empty - should return empty with colon
         env.set("FOO".to_string(), "".to_string());
         let mut expander = Expander::new(&mut env);
         let result = expander.expand("${FOO:+alternate}").unwrap();
-        assert_eq!(result, vec![""]);
+        assert_eq!(result, Vec::<String>::new());
 
         // Set to value - should return alternate
         env.set("FOO".to_string(), "value".to_string());
@@ -963,7 +1088,8 @@ mod tests {
 
         let mut expander = Expander::new(&mut env);
         let result = expander.expand("${FOO+alternate}").unwrap();
-        assert_eq!(result, vec![""]);
+        // Empty string produces no fields after word splitting
+        assert_eq!(result, Vec::<String>::new());
 
         // Set to empty - should return alternate without colon
         env.set("FOO".to_string(), "".to_string());
@@ -1055,6 +1181,26 @@ mod tests {
     }
 
     #[test]
+    fn test_word_splitting_non_whitespace_adjacent_separators() {
+        // Non-whitespace IFS separators preserve empty fields between them
+        // "a::b" with IFS=: should produce ["a", "", "b"]
+        let mut env = Environment::new();
+        env.set("IFS".to_string(), ":".to_string());
+        env.set("PATH_VAR".to_string(), "/usr/bin::/bin".to_string());
+
+        let mut expander = Expander::new(&mut env);
+        let result = expander.expand("$PATH_VAR").unwrap();
+        assert_eq!(result, vec!["/usr/bin", "", "/bin"]);
+
+        // Multiple consecutive non-whitespace separators
+        env.set("VAR".to_string(), "a:::b".to_string());
+        let mut expander = Expander::new(&mut env);
+        let result = expander.expand("$VAR").unwrap();
+        // a:::b -> "a", "", "", "b"
+        assert_eq!(result, vec!["a", "", "", "b"]);
+    }
+
+    #[test]
     fn test_glob_expansion_star() {
         // Test *.rs pattern - should match at least this file (expander.rs)
         let mut env = Environment::new();
@@ -1096,6 +1242,71 @@ mod tests {
 
         let result = expander.expand("plain_file.txt").unwrap();
         assert_eq!(result, vec!["plain_file.txt"]);
+    }
+
+    #[test]
+    fn test_glob_quoted_suppresses_expansion() {
+        // Quoted words suppress glob expansion
+        let mut env = Environment::new();
+        let mut expander = Expander::new(&mut env);
+
+        // Using expand_quoted to simulate a quoted word
+        let result = expander.expand_quoted("*.rs").unwrap();
+        // Should NOT expand glob - returns the literal pattern
+        assert_eq!(result, vec!["*.rs"]);
+    }
+
+    #[test]
+    fn test_backslash_escapes_dollar() {
+        // \$ should produce literal $, not expand variable
+        let mut env = Environment::new();
+        env.set("VAR".to_string(), "expanded".to_string());
+
+        let mut expander = Expander::new(&mut env);
+        let result = expander.expand("\\$VAR").unwrap();
+        assert_eq!(result, vec!["$VAR"]);
+    }
+
+    #[test]
+    fn test_backslash_escapes_backtick() {
+        // \` should produce literal backtick, not command substitution
+        let mut env = Environment::new();
+
+        let mut expander = Expander::new(&mut env);
+        // Input: \`echo hello\` -> after escape processing: `echo hello`
+        // Word splitting: [`echo, hello`]
+        let result = expander.expand("\\`echo hello\\`").unwrap();
+        assert_eq!(result, vec!["`echo", "hello`"]);
+    }
+
+    #[test]
+    fn test_backslash_escapes_backslash() {
+        // \\ should produce literal backslash
+        let mut env = Environment::new();
+
+        let mut expander = Expander::new(&mut env);
+        let result = expander.expand("path\\\\to\\\\file").unwrap();
+        assert_eq!(result, vec!["path\\to\\file"]);
+    }
+
+    #[test]
+    fn test_backslash_escapes_quote() {
+        // \" should produce literal quote
+        let mut env = Environment::new();
+
+        let mut expander = Expander::new(&mut env);
+        let result = expander.expand("say \\\"hello\\\"").unwrap();
+        assert_eq!(result, vec!["say", "\"hello\""]);
+    }
+
+    #[test]
+    fn test_backslash_unknown_escape() {
+        // Unknown escape sequences preserve backslash
+        let mut env = Environment::new();
+
+        let mut expander = Expander::new(&mut env);
+        let result = expander.expand("\\a\\b\\c").unwrap();
+        assert_eq!(result, vec!["\\a\\b\\c"]);
     }
 
     #[test]
