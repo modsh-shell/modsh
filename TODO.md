@@ -90,8 +90,8 @@
 - [x] `echo`
 - [x] `printf`
 - [x] `exit`
-- [ ] `return`
-- [ ] `set`, `shift`
+- [x] `return`
+- [x] `set`, `shift`
 - [ ] `test` / `[`
 - [ ] `read`
 - [ ] `trap`

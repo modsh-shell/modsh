@@ -23,8 +23,20 @@ pub enum BuiltinError {
 /// Result type for builtins
 pub type BuiltinResult = Result<super::executor::ExitStatus, BuiltinError>;
 
+/// Shell state accessible to builtins
+pub struct ShellState<'a> {
+    /// Environment variables
+    pub env: &'a mut HashMap<String, String>,
+    /// Aliases (name -> replacement)
+    pub aliases: &'a mut HashMap<String, String>,
+    /// Positional parameters ($1, $2, etc.)
+    pub positional_params: &'a mut Vec<String>,
+    /// Shell options (set -e, -x, etc.)
+    pub options: &'a mut super::executor::ShellOptions,
+}
+
 /// Builtin function type
-pub type BuiltinFn = fn(&[&str], &mut HashMap<String, String>, &mut HashMap<String, String>) -> BuiltinResult;
+pub type BuiltinFn = fn(&[&str], &mut ShellState<'_>) -> BuiltinResult;
 
 /// Get a builtin by name
 pub fn get_builtin(name: &str) -> Option<BuiltinFn> {
@@ -37,53 +49,53 @@ pub fn get_builtin(name: &str) -> Option<BuiltinFn> {
         "unset" => Some(builtin_unset),
         "env" => Some(builtin_env),
         "exit" => Some(builtin_exit),
+        "return" => Some(builtin_return),
         "true" => Some(builtin_true),
         "false" => Some(builtin_false),
         "alias" => Some(builtin_alias),
         "unalias" => Some(builtin_unalias),
         "." | "source" => Some(builtin_source),
+        "set" => Some(builtin_set),
+        "shift" => Some(builtin_shift),
         _ => None,
     }
 }
 
 /// Change directory builtin
-fn builtin_cd(args: &[&str], env: &mut HashMap<String, String>, _aliases: &mut HashMap<String, String>) -> BuiltinResult {
-    let path = if args.is_empty() {
-        // Go to HOME
-        std::env::var("HOME").map_err(|_| BuiltinError::Generic("HOME not set".to_string()))?
+fn builtin_cd(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
+    let target = if args.is_empty() {
+        // No args: go to HOME
+        state.env.get("HOME")
+            .cloned()
+            .unwrap_or_else(|| "/".to_string())
     } else {
         args[0].to_string()
     };
 
-    let new_path = if path.starts_with('/') {
-        std::path::PathBuf::from(path)
-    } else {
-        std::env::current_dir()
-            .map_err(|e| BuiltinError::Generic(e.to_string()))?
-            .join(path)
-    };
-
-    // Get current PWD before changing directory (for OLDPWD)
-    let old_pwd = env.get("PWD").cloned().unwrap_or_default();
-
-    std::env::set_current_dir(&new_path).map_err(|e| BuiltinError::Generic(e.to_string()))?;
-
-    // Update PWD
-    let canonical = new_path
-        .canonicalize()
-        .unwrap_or(new_path)
-        .to_string_lossy()
-        .to_string();
-
-    // Set OLDPWD first (to the previous PWD), then update PWD
-    env.insert("OLDPWD".to_string(), old_pwd);
-    env.insert("PWD".to_string(), canonical);
-
-    Ok(super::executor::ExitStatus::SUCCESS)
+    let path = std::path::PathBuf::from(&target);
+    match std::env::set_current_dir(&path) {
+        Ok(()) => {
+            // Update PWD and OLDPWD environment variables
+            if let Ok(cwd) = std::env::current_dir() {
+                let old_pwd = state.env.get("PWD").cloned();
+                if let Some(old) = old_pwd {
+                    state.env.insert("OLDPWD".to_string(), old);
+                }
+                state.env.insert("PWD".to_string(), cwd.to_string_lossy().to_string());
+            }
+            Ok(super::executor::ExitStatus::SUCCESS)
+        }
+        Err(e) => Err(BuiltinError::Generic(format!(
+            "cd: {}: {}",
+            target,
+            e
+        ))),
+    }
 }
 
 /// Print working directory builtin
-fn builtin_pwd(_args: &[&str], _env: &mut HashMap<String, String>, _aliases: &mut HashMap<String, String>) -> BuiltinResult {
+#[allow(clippy::unnecessary_wraps)]
+fn builtin_pwd(_args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
     let cwd = std::env::current_dir().map_err(|e| BuiltinError::Generic(e.to_string()))?;
     println!("{}", cwd.display());
     Ok(super::executor::ExitStatus::SUCCESS)
@@ -91,7 +103,7 @@ fn builtin_pwd(_args: &[&str], _env: &mut HashMap<String, String>, _aliases: &mu
 
 /// Echo builtin
 #[allow(clippy::unnecessary_wraps)]
-fn builtin_echo(args: &[&str], _env: &mut HashMap<String, String>, _aliases: &mut HashMap<String, String>) -> BuiltinResult {
+fn builtin_echo(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     let mut newline = true;
     let mut start = 0;
 
@@ -121,7 +133,7 @@ fn builtin_echo(args: &[&str], _env: &mut HashMap<String, String>, _aliases: &mu
 
 /// Printf builtin - formatted output
 /// Supports POSIX format specifiers with width/precision: %s, %d, %i, %o, %u, %x, %X, %f, %c, %b (escape), %%
-fn builtin_printf(args: &[&str], _env: &mut HashMap<String, String>, _aliases: &mut HashMap<String, String>) -> BuiltinResult {
+fn builtin_printf(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     if args.is_empty() {
         return Err(BuiltinError::Generic("printf: missing format string".to_string()));
     }
@@ -377,10 +389,10 @@ fn expand_escapes(s: &str) -> String {
 
 /// Export builtin
 #[allow(clippy::unnecessary_wraps)]
-fn builtin_export(args: &[&str], env: &mut HashMap<String, String>, _aliases: &mut HashMap<String, String>) -> BuiltinResult {
+fn builtin_export(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
     if args.is_empty() {
         // Print all exported variables
-        for (k, v) in env.iter() {
+        for (k, v) in state.env.iter() {
             println!("export {}={}", k, shlex::quote(v));
         }
         return Ok(super::executor::ExitStatus::SUCCESS);
@@ -388,11 +400,12 @@ fn builtin_export(args: &[&str], env: &mut HashMap<String, String>, _aliases: &m
 
     for arg in args {
         if let Some((name, value)) = arg.split_once('=') {
-            env.insert(name.to_string(), value.to_string());
+            // export VAR=value
+            state.env.insert(name.to_string(), value.to_string());
             std::env::set_var(name, value);
         } else {
-            // Mark existing variable as exported (already in env HashMap)
-            if let Some(value) = env.get(*arg).cloned() {
+            // export VAR (mark as exported, for now just ensure it exists)
+            if let Some(value) = state.env.get(*arg).cloned() {
                 std::env::set_var(arg, value);
             }
         }
@@ -403,9 +416,9 @@ fn builtin_export(args: &[&str], env: &mut HashMap<String, String>, _aliases: &m
 
 /// Unset builtin
 #[allow(clippy::unnecessary_wraps)]
-fn builtin_unset(args: &[&str], env: &mut HashMap<String, String>, _aliases: &mut HashMap<String, String>) -> BuiltinResult {
+fn builtin_unset(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
     for arg in args {
-        env.remove(*arg);
+        state.env.remove(*arg);
         std::env::remove_var(arg);
     }
     Ok(super::executor::ExitStatus::SUCCESS)
@@ -413,7 +426,7 @@ fn builtin_unset(args: &[&str], env: &mut HashMap<String, String>, _aliases: &mu
 
 /// Env builtin - print environment
 #[allow(clippy::unnecessary_wraps)]
-fn builtin_env(_args: &[&str], _env: &mut HashMap<String, String>, _aliases: &mut HashMap<String, String>) -> BuiltinResult {
+fn builtin_env(_args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     for (k, v) in std::env::vars() {
         println!("{k}={v}");
     }
@@ -421,7 +434,7 @@ fn builtin_env(_args: &[&str], _env: &mut HashMap<String, String>, _aliases: &mu
 }
 
 /// Exit builtin
-fn builtin_exit(args: &[&str], _env: &mut HashMap<String, String>, _aliases: &mut HashMap<String, String>) -> BuiltinResult {
+fn builtin_exit(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     let code = if args.is_empty() {
         0
     } else {
@@ -430,15 +443,25 @@ fn builtin_exit(args: &[&str], _env: &mut HashMap<String, String>, _aliases: &mu
     Err(BuiltinError::Exit(code))
 }
 
+/// Return builtin - return from function with exit status
+fn builtin_return(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
+    let code = if args.is_empty() {
+        0
+    } else {
+        args[0].parse::<i32>().unwrap_or(0)
+    };
+    Err(BuiltinError::Return(code))
+}
+
 /// True builtin
 #[allow(clippy::unnecessary_wraps)]
-fn builtin_true(_args: &[&str], _env: &mut HashMap<String, String>, _aliases: &mut HashMap<String, String>) -> BuiltinResult {
+fn builtin_true(_args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     Ok(super::executor::ExitStatus::SUCCESS)
 }
 
 /// False builtin
 #[allow(clippy::unnecessary_wraps)]
-fn builtin_false(_args: &[&str], _env: &mut HashMap<String, String>, _aliases: &mut HashMap<String, String>) -> BuiltinResult {
+fn builtin_false(_args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     Ok(super::executor::ExitStatus {
         code: 1,
         signaled: false,
@@ -446,7 +469,7 @@ fn builtin_false(_args: &[&str], _env: &mut HashMap<String, String>, _aliases: &
 }
 
 /// Source builtin
-fn builtin_source(args: &[&str], _env: &mut HashMap<String, String>, _aliases: &mut HashMap<String, String>) -> BuiltinResult {
+fn builtin_source(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     if args.is_empty() {
         return Err(BuiltinError::Generic(
             "filename argument required".to_string(),
@@ -465,10 +488,10 @@ fn builtin_source(args: &[&str], _env: &mut HashMap<String, String>, _aliases: &
 
 /// Alias builtin - list or define aliases
 #[allow(clippy::unnecessary_wraps)]
-fn builtin_alias(args: &[&str], _env: &mut HashMap<String, String>, aliases: &mut HashMap<String, String>) -> BuiltinResult {
+fn builtin_alias(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
     if args.is_empty() {
         // List all aliases
-        for (name, value) in aliases.iter() {
+        for (name, value) in state.aliases.iter() {
             println!("{}={}", name, shlex::quote(value));
         }
         return Ok(super::executor::ExitStatus::SUCCESS);
@@ -486,10 +509,10 @@ fn builtin_alias(args: &[&str], _env: &mut HashMap<String, String>, aliases: &mu
             } else {
                 value.to_string()
             };
-            aliases.insert(name.to_string(), value);
+            state.aliases.insert(name.to_string(), value);
         } else {
             // Print specific alias
-            if let Some(value) = aliases.get(*arg) {
+            if let Some(value) = state.aliases.get(*arg) {
                 println!("{}={}", arg, shlex::quote(value));
             } else {
                 return Err(BuiltinError::Generic(format!("alias: {}: not found", arg)));
@@ -502,22 +525,93 @@ fn builtin_alias(args: &[&str], _env: &mut HashMap<String, String>, aliases: &mu
 
 /// Unalias builtin - remove aliases
 #[allow(clippy::unnecessary_wraps)]
-fn builtin_unalias(args: &[&str], _env: &mut HashMap<String, String>, aliases: &mut HashMap<String, String>) -> BuiltinResult {
+fn builtin_unalias(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
     if args.is_empty() {
         return Err(BuiltinError::Generic("unalias: usage: unalias [-a] name [name ...]".to_string()));
     }
 
     if args[0] == "-a" {
         // Remove all aliases
-        aliases.clear();
+        state.aliases.clear();
         return Ok(super::executor::ExitStatus::SUCCESS);
     }
 
-    for name in args {
-        if aliases.remove(*name).is_none() {
-            return Err(BuiltinError::Generic(format!("unalias: {}: no such alias", name)));
+    for arg in args {
+        state.aliases.remove(*arg);
+    }
+    Ok(super::executor::ExitStatus::SUCCESS)
+}
+
+/// Set builtin - set shell options and positional parameters
+fn builtin_set(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
+    if args.is_empty() {
+        // Print all variables (same as export without args for now)
+        for (k, v) in state.env.iter() {
+            println!("{}={}", k, shlex::quote(v));
+        }
+        return Ok(super::executor::ExitStatus::SUCCESS);
+    }
+
+    // Check for -- to set positional parameters
+    if args[0] == "--" {
+        // Set positional parameters to remaining args
+        state.positional_params.clear();
+        for arg in &args[1..] {
+            state.positional_params.push((*arg).to_string());
+        }
+        return Ok(super::executor::ExitStatus::SUCCESS);
+    }
+
+    // Handle options like -e, -x, -u, -f, etc.
+    for arg in args {
+        if arg.starts_with('-') && arg.len() > 1 {
+            let opts = &arg[1..];
+            for c in opts.chars() {
+                match c {
+                    'e' => state.options.errexit = true,
+                    'x' => state.options.xtrace = true,
+                    'u' => state.options.nounset = true,
+                    'f' => state.options.noglob = true,
+                    _ => return Err(BuiltinError::Generic(format!("set: invalid option: -{}", c))),
+                }
+            }
+        } else if arg.starts_with('+') && arg.len() > 1 {
+            // Disable options with +e, +x, etc.
+            let opts = &arg[1..];
+            for c in opts.chars() {
+                match c {
+                    'e' => state.options.errexit = false,
+                    'x' => state.options.xtrace = false,
+                    'u' => state.options.nounset = false,
+                    'f' => state.options.noglob = false,
+                    _ => return Err(BuiltinError::Generic(format!("set: invalid option: +{}", c))),
+                }
+            }
+        } else {
+            // Positional argument
+            state.positional_params.push((*arg).to_string());
         }
     }
+
+    Ok(super::executor::ExitStatus::SUCCESS)
+}
+
+/// Shift builtin - shift positional parameters
+fn builtin_shift(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
+    let n = if args.is_empty() {
+        1
+    } else {
+        args[0].parse::<usize>().map_err(|_| {
+            BuiltinError::Generic(format!("shift: {}: numeric argument required", args[0]))
+        })?
+    };
+
+    if n > state.positional_params.len() {
+        return Err(BuiltinError::Generic("shift: can't shift that many".to_string()));
+    }
+
+    // Remove first n elements
+    state.positional_params.drain(0..n);
 
     Ok(super::executor::ExitStatus::SUCCESS)
 }

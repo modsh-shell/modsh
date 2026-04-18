@@ -1,7 +1,7 @@
 //! Executor — Forks/execs commands, manages pipes
 
 use crate::jobcontrol::{JobControl, JobStatus};
-use crate::parser::{Command, RedirectKind, SimpleCommand};
+use crate::parser::{Command, FunctionDefinition, RedirectKind, SimpleCommand};
 use thiserror::Error;
 
 /// Errors that can occur during execution
@@ -66,18 +66,37 @@ impl ExitStatus {
     }
 }
 
+/// Shell options (set -e, set -x, etc.)
+#[derive(Debug, Clone, Default)]
+pub struct ShellOptions {
+    /// Exit on error (set -e)
+    pub errexit: bool,
+    /// Print commands before executing (set -x)
+    pub xtrace: bool,
+    /// Treat unset variables as error (set -u)
+    pub nounset: bool,
+    /// Disable wildcard expansion (set -f)
+    pub noglob: bool,
+}
+
 /// Executor for shell commands
 pub struct Executor {
     /// Environment variables
     pub env: std::collections::HashMap<String, String>,
     /// Aliases (name -> replacement)
     pub aliases: std::collections::HashMap<String, String>,
+    /// Functions (name -> body command)
+    functions: std::collections::HashMap<String, FunctionDefinition>,
+    /// Positional parameters ($1, $2, etc.)
+    pub positional_params: Vec<String>,
+    /// Shell options (set -e, -x, etc.)
+    pub shell_options: ShellOptions,
     /// Current working directory
     pub cwd: std::path::PathBuf,
     /// Temporary files for heredocs/herestrings (kept alive until process starts)
     temp_files: Vec<tempfile::NamedTempFile>,
     /// Job control manager
-    job_control: JobControl,
+    pub job_control: JobControl,
 }
 
 impl Executor {
@@ -87,6 +106,9 @@ impl Executor {
         Self {
             env: std::env::vars().collect(),
             aliases: std::collections::HashMap::new(),
+            functions: std::collections::HashMap::new(),
+            positional_params: Vec::new(),
+            shell_options: ShellOptions::default(),
             cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/")),
             temp_files: Vec::new(),
             job_control: JobControl::new(),
@@ -218,9 +240,39 @@ impl Executor {
         &mut self,
         func_def: &crate::parser::FunctionDefinition,
     ) -> Result<ExitStatus, ExecError> {
-        // TODO: Register function in environment
-        // For now, just execute the body immediately (not correct behavior)
-        self.execute(&func_def.body)
+        // Register the function in the function table
+        self.functions.insert(func_def.name.clone(), func_def.clone());
+        Ok(ExitStatus::SUCCESS)
+    }
+
+    /// Execute a function call
+    fn execute_function_call(
+        &mut self,
+        name: &str,
+        _args: &[String],
+    ) -> Result<ExitStatus, ExecError> {
+        // Get the function definition and clone the body to avoid borrow issues
+        let body = self.functions.get(name)
+            .ok_or_else(|| ExecError::CommandNotFound(name.to_string()))?
+            .body.clone();
+
+        // Save current positional parameters (if any)
+        // For now, we don't implement $1, $2, etc. but this is where we'd set them
+
+        // Execute the function body
+        let result = self.execute(&body);
+
+        // Handle return builtin - convert Return error to Ok status
+        match result {
+            Ok(status) => Ok(status),
+            Err(ExecError::Builtin(crate::builtins::BuiltinError::Return(code))) => {
+                Ok(ExitStatus {
+                    code: code as u8,
+                    signaled: false,
+                })
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Execute a command in the background using fork
@@ -529,13 +581,30 @@ impl Executor {
         let program = &cmd.words[0];
         let args: Vec<&str> = cmd.words[1..].iter().map(String::as_str).collect();
 
+        // Check if it's a function call (functions take precedence over builtins)
+        if self.functions.contains_key(program) {
+            let args_owned: Vec<String> = cmd.words[1..].iter().cloned().collect();
+            return self.execute_function_call(program, &args_owned);
+        }
+
         // Check if it's a builtin
         if let Some(builtin) = crate::builtins::get_builtin(program) {
             // TODO: Apply redirects to builtin output
-            match builtin(&args, &mut self.env, &mut self.aliases) {
+            let mut state = crate::builtins::ShellState {
+                env: &mut self.env,
+                aliases: &mut self.aliases,
+                positional_params: &mut self.positional_params,
+                options: &mut self.shell_options,
+            };
+            match builtin(&args, &mut state) {
                 Ok(status) => return Ok(status),
                 Err(crate::builtins::BuiltinError::Source(path)) => {
                     return self.execute_source(&path);
+                }
+                // Return error propagates up - will be caught by function call handler
+                // or become an error if used outside of function
+                Err(crate::builtins::BuiltinError::Return(code)) => {
+                    return Err(ExecError::Builtin(crate::builtins::BuiltinError::Return(code)));
                 }
                 Err(e) => return Err(ExecError::Builtin(e)),
             }
@@ -1231,6 +1300,100 @@ mod tests {
         let ast = parse("a").expect("Failed to parse");
         let _ = executor.execute(&ast);
         // If we get here without hanging, the test passes
+    }
+
+    // ===== Return Builtin Tests =====
+
+    #[test]
+    fn test_builtin_return_from_function() {
+        // Define a function that returns with a specific code
+        let ast = parse("myfunc() { return 42; }").expect("Failed to parse");
+        let mut executor = Executor::new();
+        executor.execute(&ast).expect("Failed to define function");
+
+        // Call the function and check return value
+        let ast = parse("myfunc").expect("Failed to parse");
+        let status = executor.execute(&ast).expect("Failed to call function");
+        assert_eq!(status.code, 42, "Function should return 42");
+    }
+
+    #[test]
+    fn test_builtin_return_default() {
+        // Define a function with default return (0)
+        let ast = parse("myfunc() { return; }").expect("Failed to parse");
+        let mut executor = Executor::new();
+        executor.execute(&ast).expect("Failed to define function");
+
+        let ast = parse("myfunc").expect("Failed to parse");
+        let status = executor.execute(&ast).expect("Failed to call function");
+        assert!(status.success(), "Default return should be 0");
+    }
+
+    #[test]
+    fn test_builtin_return_outside_function_errors() {
+        // return outside of function should error
+        let result = execute("return 42");
+        assert!(result.is_err(), "return outside function should error");
+    }
+
+    // ===== Set and Shift Tests =====
+
+    #[test]
+    fn test_builtin_set_positional_params() {
+        // Test set -- to set positional parameters
+        let ast = parse("set -- arg1 arg2 arg3").expect("Failed to parse");
+        let mut executor = Executor::new();
+        let status = executor.execute(&ast).expect("Failed to execute set");
+        assert!(status.success(), "set should succeed");
+        assert_eq!(executor.positional_params.len(), 3, "Should have 3 positional params");
+        assert_eq!(executor.positional_params[0], "arg1");
+        assert_eq!(executor.positional_params[1], "arg2");
+        assert_eq!(executor.positional_params[2], "arg3");
+    }
+
+    #[test]
+    fn test_builtin_shift() {
+        // Set positional parameters, then shift
+        let ast = parse("set -- arg1 arg2 arg3; shift").expect("Failed to parse");
+        let mut executor = Executor::new();
+        let status = executor.execute(&ast).expect("Failed to execute");
+        assert!(status.success(), "shift should succeed");
+        assert_eq!(executor.positional_params.len(), 2, "Should have 2 positional params after shift");
+        assert_eq!(executor.positional_params[0], "arg2");
+        assert_eq!(executor.positional_params[1], "arg3");
+    }
+
+    #[test]
+    fn test_builtin_shift_n() {
+        // Shift by more than 1
+        let ast = parse("set -- a b c d e; shift 2").expect("Failed to parse");
+        let mut executor = Executor::new();
+        let status = executor.execute(&ast).expect("Failed to execute");
+        assert!(status.success(), "shift 2 should succeed");
+        assert_eq!(executor.positional_params.len(), 3, "Should have 3 positional params after shift 2");
+        assert_eq!(executor.positional_params[0], "c");
+    }
+
+    #[test]
+    fn test_builtin_set_options() {
+        // Test set -e, -x, etc.
+        let ast = parse("set -e -x -u -f").expect("Failed to parse");
+        let mut executor = Executor::new();
+        let status = executor.execute(&ast).expect("Failed to execute set");
+        assert!(status.success(), "set options should succeed");
+        assert!(executor.shell_options.errexit, "errexit should be set");
+        assert!(executor.shell_options.xtrace, "xtrace should be set");
+        assert!(executor.shell_options.nounset, "nounset should be set");
+        assert!(executor.shell_options.noglob, "noglob should be set");
+    }
+
+    #[test]
+    fn test_builtin_set_disable_options() {
+        // Test disabling options with +
+        let ast = parse("set -e; set +e").expect("Failed to parse");
+        let mut executor = Executor::new();
+        executor.execute(&ast).expect("Failed to execute set");
+        assert!(!executor.shell_options.errexit, "errexit should be disabled");
     }
 
     // ===== ExitStatus Tests =====
