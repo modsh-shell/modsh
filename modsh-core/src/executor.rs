@@ -191,11 +191,13 @@ impl Executor {
     }
 
     fn execute_for(&mut self, for_loop: &crate::parser::ForLoop) -> Result<ExitStatus, ExecError> {
-        let words = if for_loop.words.is_empty() {
-            // TODO: Get positional parameters "$@"
-            vec![]
-        } else {
-            for_loop.words.clone()
+        let words: Vec<String> = match &for_loop.words {
+            None => {
+                // No "in" clause - iterate over "$@" (positional parameters)
+                // TODO: Get positional parameters from shell state
+                vec![]
+            }
+            Some(words) => words.clone(),
         };
 
         let mut last_status = ExitStatus::SUCCESS;

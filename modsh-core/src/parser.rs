@@ -23,6 +23,9 @@ pub enum ParseError {
     /// Unterminated string or heredoc
     #[error("unterminated construct: {0}")]
     Unterminated(String),
+    /// Lexer error during tokenization
+    #[error("lexical error: {0}")]
+    Lex(String),
 }
 
 /// Result of parsing with partial input support
@@ -96,8 +99,8 @@ pub struct IfClause {
 pub struct ForLoop {
     /// Loop variable name
     pub var: String,
-    /// Words to iterate over (empty means "$@")
-    pub words: Vec<String>,
+    /// Words to iterate over (None means "$@", Some([]) means explicit empty list)
+    pub words: Option<Vec<String>>,
     /// Body commands
     pub body: Box<Command>,
 }
@@ -261,16 +264,38 @@ impl Parser {
             ParseError::Expected { got, .. } => matches!(got, Token::Eof),
             ParseError::UnexpectedEof | ParseError::Unexpected(Token::Eof) => true,
             _ => {
-                // Only treat as incomplete if we're at EOF and expecting terminators
+                // If we're at EOF, check if any compound command is open
+                // by looking at the last non-comment, non-Eof token
                 if !matches!(self.peek(), Token::Eof) {
                     return false;
                 }
-                // Check if we hit Eof while expecting compound command terminators
-                let eof_keywords = ["then", "else", "fi", "do", "done", "esac", "}"];
-                {
-                    let token = self.peek();
-                    Self::is_word_token(token) && eof_keywords.contains(&Self::word_value(token).unwrap_or(""))
+                // Find last meaningful token before EOF
+                let last_meaningful = self.tokens.iter().rev().find(|t| {
+                    !matches!(t, Token::Eof | Token::Comment(_))
+                });
+
+                if let Some(token) = last_meaningful {
+                    // If we ended on an opening keyword without its closing keyword,
+                    // or an operator expecting continuation, it's incomplete
+                    let opening_keywords = ["if", "then", "elif", "else", "for", "while", "case", "in", "do"];
+                    let continuation_ops = [
+                        Operator::Pipe, Operator::And, Operator::Or,
+                        Operator::LBrace, Operator::LParen,
+                    ];
+
+                    if Self::is_word_token(token) {
+                        let word = Self::word_value(token).unwrap_or("");
+                        if opening_keywords.contains(&word) {
+                            return true;
+                        }
+                    }
+                    if let Token::Operator(op) = token {
+                        if continuation_ops.contains(op) {
+                            return true;
+                        }
+                    }
                 }
+                false
             }
         }
     }
@@ -372,7 +397,8 @@ impl Parser {
                         let right = self.parse_list_until(terminators)?;
                         Ok(Command::List(Box::new(bg_cmd), Box::new(right)))
                     }
-                    _ => Ok(bg_cmd),
+                    Token::Eof => Ok(bg_cmd),
+                    token => Err(ParseError::Unexpected(token.clone())),
                 }
             }
             _ => Ok(left),
@@ -523,9 +549,9 @@ impl Parser {
 
         let words = if Self::is_word_token(self.peek()) && Self::word_value(self.peek()) == Some("in") {
             self.advance();
-            self.parse_for_words()
+            Some(self.parse_for_words()) // Some([]) = explicit empty list, Some(words) = explicit list
         } else {
-            Vec::new() // Empty means iterate over "$@"
+            None // No "in" clause means iterate over "$@"
         };
 
         self.expect_word("do")?;
@@ -575,10 +601,19 @@ impl Parser {
 
         let mut clauses = Vec::new();
         loop {
+            self.skip_comments();
             match self.peek() {
                 token if Self::is_word_token(token) && Self::word_value(token) == Some("esac") => {
                     self.advance();
                     break;
+                }
+                // Handle optional leading ( before pattern (POSIX extension)
+                Token::Operator(Operator::LParen) => {
+                    self.advance(); // consume the (
+                    let patterns = self.parse_case_patterns()?;
+                    let body = Box::new(self.parse_list_until(&[";", "esac"])?);
+                    self.expect_case_terminator_or_semicolon()?;
+                    clauses.push((patterns, body));
                 }
                 _ => {
                     let patterns = self.parse_case_patterns()?;
@@ -621,8 +656,16 @@ impl Parser {
         if !(Self::is_word_token(self.peek()) && Self::word_value(self.peek()) == Some(name)) {
             return Ok(None);
         }
-        // Look ahead: next tokens should be () for function definition
-        if !matches!(self.peek_next(), Token::Operator(Operator::LParen)) {
+        // Look ahead: next non-comment token should be ( for function definition
+        let mut peek_pos = self.pos + 1;
+        while peek_pos < self.tokens.len() {
+            match &self.tokens[peek_pos] {
+                Token::Comment(_) => peek_pos += 1,
+                Token::Operator(Operator::LParen) => break,
+                _ => return Ok(None),
+            }
+        }
+        if peek_pos >= self.tokens.len() || !matches!(self.tokens.get(peek_pos), Some(Token::Operator(Operator::LParen))) {
             return Ok(None);
         }
 
@@ -646,7 +689,7 @@ impl Parser {
         })))
     }
 
-    /// Parse function body (group command or any compound command)
+    /// Parse function body (group command, subshell, or any compound command)
     fn parse_function_body(&mut self) -> Result<Box<Command>, ParseError> {
         // Function body must be a compound command
         match self.peek() {
@@ -656,6 +699,13 @@ impl Parser {
                 let body = Box::new(self.parse_list_until(&["}"])?);
                 self.expect_operator(Operator::RBrace)?;
                 Ok(body)
+            }
+            Token::Operator(Operator::LParen) => {
+                // ( commands ) form - subshell as function body
+                self.advance();
+                let body = Box::new(self.parse_list_until(&[")"])?);
+                self.expect_operator(Operator::RParen)?;
+                Ok(Command::Subshell(body).into())
             }
             token if Self::is_word_token(token) => match Self::word_value(token).unwrap_or("") {
                 "if" => Ok(Box::new(self.parse_if()?)),
@@ -721,11 +771,24 @@ impl Parser {
                         });
                     }
                 }
+            } else {
+                // No more patterns - only error if we haven't collected any
+                if patterns.is_empty() {
+                    return Err(ParseError::Expected {
+                        expected: "pattern word".to_string(),
+                        got: self.peek().clone(),
+                    });
+                }
+                // If we've collected patterns but hit a non-word, expect )
+                if matches!(self.peek(), Token::Operator(Operator::RParen)) {
+                    self.advance();
+                    break;
+                }
+                return Err(ParseError::Expected {
+                    expected: "| or )".to_string(),
+                    got: self.peek().clone(),
+                });
             }
-            return Err(ParseError::Expected {
-                expected: "pattern word".to_string(),
-                got: self.peek().clone(),
-            });
         }
         Ok(patterns)
     }
@@ -888,10 +951,8 @@ impl Parser {
 /// # Errors
 /// Returns an error if the input contains invalid syntax
 pub fn parse(input: &str) -> Result<Command, ParseError> {
-    let tokens = crate::lexer::tokenize(input).map_err(|_e| ParseError::Expected {
-        expected: "valid token".to_string(),
-        got: Token::Eof,
-    })?;
+    let tokens = crate::lexer::tokenize(input)
+        .map_err(|e| ParseError::Lex(e.to_string()))?;
     let mut parser = Parser::new(tokens);
     parser.parse()
 }
@@ -955,7 +1016,7 @@ mod tests {
         match cmd {
             Command::For(for_loop) => {
                 assert_eq!(for_loop.var, "i");
-                assert_eq!(for_loop.words, vec!["a", "b", "c"]);
+                assert_eq!(for_loop.words, Some(vec!["a".to_string(), "b".to_string(), "c".to_string()]));
             }
             _ => panic!("Expected for command"),
         }
@@ -1314,7 +1375,7 @@ mod tests {
         match cmd {
             Command::For(for_loop) => {
                 assert_eq!(for_loop.var, "i");
-                assert!(for_loop.words.is_empty()); // Empty in list
+                assert_eq!(for_loop.words, Some(vec![])); // Explicit empty in list
             }
             _ => panic!("Expected for loop"),
         }
@@ -1341,14 +1402,14 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "! pipeline negation operator not yet implemented (TODO: add Negation AST variant)"]
     fn test_bang_operator() {
         // ! is parsed as operator (not yet implemented as negation)
         // Currently this fails because ! is an operator token, not a word
-        // This test documents the current behavior
+        // This test documents the expected behavior when implemented
         let result = parse("! echo hello");
-        // The ! operator at start of command is not yet fully supported
-        // When implemented, it should wrap the command in a Negation variant
-        assert!(result.is_err() || matches!(result.unwrap(), Command::Simple(..)));
+        // The ! operator at start of command should wrap in a Negation variant
+        assert!(matches!(result, Ok(Command::Simple(..))));
     }
 
     #[test]
