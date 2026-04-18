@@ -19,8 +19,12 @@ pub enum LexError {
 /// Token types for POSIX shell syntax
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
-    /// A word (command name, argument, variable name)
+    /// An unquoted word (command name, argument, variable name)
     Word(String),
+    /// A single-quoted string ('literal content')
+    SingleQuoted(String),
+    /// A double-quoted string ("allows $expansion")
+    DoubleQuoted(String),
     /// An operator (|, &&, ||, ;, etc.)
     Operator(Operator),
     /// A redirection (<, >, >>, 2>, etc.)
@@ -85,6 +89,8 @@ pub enum Redirect {
     },
     /// Here-string: <<<
     Herestring {
+        /// File descriptor (None means stdin)
+        fd: Option<u32>,
         /// Content word for the here-string
         word: String,
     },

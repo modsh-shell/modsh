@@ -1396,6 +1396,114 @@ mod tests {
         assert!(!executor.shell_options.errexit, "errexit should be disabled");
     }
 
+    // ===== Test Builtin Tests =====
+
+    #[test]
+    fn test_builtin_test_string_equal() {
+        let status = execute("test hello = hello").expect("Failed to execute test");
+        assert!(status.success(), "String equality test should succeed");
+    }
+
+    #[test]
+    fn test_builtin_test_string_not_equal() {
+        // Use explicit test for inequality via empty string check
+        let ast = parse("test hello = world").expect("Failed to parse");
+        let mut executor = Executor::new();
+        let status = executor.execute(&ast).expect("Failed to execute test");
+        assert!(!status.success(), "hello = world should be false");
+    }
+
+    #[test]
+    fn test_builtin_test_numeric_comparison() {
+        // 5 -lt 10 should be true
+        let status = execute("test 5 -lt 10").expect("Failed to execute numeric test");
+        assert!(status.success(), "5 < 10 should be true");
+    }
+
+    #[test]
+    fn test_builtin_test_numeric_gt() {
+        // 10 -gt 5 should be true
+        let status = execute("test 10 -gt 5").expect("Failed to execute numeric test");
+        assert!(status.success(), "10 > 5 should be true");
+    }
+
+    #[test]
+    fn test_builtin_test_file_exists() {
+        // Test with a known existing file
+        let status = execute("test -f /bin/sh").expect("Failed to execute file test");
+        assert!(status.success(), "/bin/sh should exist");
+    }
+
+    #[test]
+    fn test_builtin_test_directory() {
+        // Test with a known directory
+        let status = execute("test -d /tmp").expect("Failed to execute directory test");
+        assert!(status.success(), "/tmp should be a directory");
+    }
+
+    #[test]
+    fn test_builtin_test_non_empty_string() {
+        // -n tests for non-empty string
+        let status = execute("test -n hello").expect("Failed to execute -n test");
+        assert!(status.success(), "-n hello should be true");
+    }
+
+    #[test]
+    fn test_builtin_test_empty_string() {
+        // -z tests for empty string
+        let status = execute("test -z ''").expect("Failed to execute -z test");
+        assert!(status.success(), "-z '' should be true");
+    }
+
+    // ===== Read and Trap Tests =====
+
+    #[test]
+    fn test_builtin_read_reply_variable() {
+        // Test that read sets REPLY when no variable given
+        // We can't easily test interactive input, but we can test the EOF case
+        let ast = parse("read < /dev/null").expect("Failed to parse");
+        let mut executor = Executor::new();
+        let status = executor.execute(&ast).expect("Failed to execute read");
+        // EOF should return failure (exit code 1)
+        assert!(!status.success(), "read at EOF should return failure");
+        // REPLY should be set to empty
+        assert_eq!(executor.env.get("REPLY"), Some(&String::new()));
+    }
+
+    #[test]
+    fn test_builtin_read_with_variable() {
+        // Test read with explicit variable name at EOF
+        let ast = parse("read MYVAR < /dev/null").expect("Failed to parse");
+        let mut executor = Executor::new();
+        let status = executor.execute(&ast).expect("Failed to execute read");
+        assert!(!status.success(), "read at EOF should return failure");
+        assert_eq!(executor.env.get("MYVAR"), Some(&String::new()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_builtin_trap_list_signals() {
+        // Test trap -l lists signals
+        let status = execute("trap -l").expect("Failed to execute trap -l");
+        assert!(status.success(), "trap -l should succeed");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_builtin_trap_ignore_signal() {
+        // Test trap '' ignores a signal
+        let status = execute("trap '' INT").expect("Failed to execute trap");
+        assert!(status.success(), "trap should succeed");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_builtin_trap_reset_signal() {
+        // Test trap - resets a signal to default
+        let status = execute("trap - INT").expect("Failed to execute trap");
+        assert!(status.success(), "trap - should succeed");
+    }
+
     // ===== ExitStatus Tests =====
 
     #[test]

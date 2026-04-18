@@ -16,7 +16,8 @@ mod tests {
     #[test]
     fn test_simple_word() {
         let tokens = tokenize("echo hello").unwrap();
-        assert_eq!(tokens.len(), 3);
+        // Eof no longer included: 2 tokens (was 3 with Eof)
+        assert_eq!(tokens.len(), 2);
         assert!(matches!(tokens[0], Token::Word(ref w) if w == "echo"));
         assert!(matches!(tokens[1], Token::Word(ref w) if w == "hello"));
     }
@@ -30,13 +31,15 @@ mod tests {
     #[test]
     fn test_single_quotes() {
         let tokens = tokenize("echo 'hello world'").unwrap();
-        assert!(matches!(tokens[1], Token::Word(ref w) if w == "hello world"));
+        // Single-quoted strings now return SingleQuoted token, not Word
+        assert!(matches!(tokens[1], Token::SingleQuoted(ref w) if w == "hello world"));
     }
 
     #[test]
     fn test_double_quotes() {
         let tokens = tokenize(r#"echo "hello world""#).unwrap();
-        assert!(matches!(tokens[1], Token::Word(ref w) if w == "hello world"));
+        // Double-quoted strings now return DoubleQuoted token, not Word
+        assert!(matches!(tokens[1], Token::DoubleQuoted(ref w) if w == "hello world"));
     }
 
     #[test]
@@ -98,7 +101,7 @@ mod tests {
     fn test_herestring() {
         let tokens = tokenize("cat <<< hello").unwrap();
         assert!(
-            matches!(tokens[1], Token::Redirect(Redirect::Herestring { word: ref w }) if w == "hello")
+            matches!(tokens[1], Token::Redirect(Redirect::Herestring { fd: None, word: ref w }) if w == "hello")
         );
     }
 
@@ -147,21 +150,22 @@ mod tests {
     #[test]
     fn test_embedded_quotes() {
         let tokens = tokenize(r#"echo foo'bar'baz"#).unwrap();
-        assert!(matches!(tokens[1], Token::Word(ref w) if w == "foo'bar'baz" || w == "foobar"));
+        // Embedded quotes are part of the unquoted Word token
+        assert!(matches!(tokens[1], Token::Word(ref w) if w == "foo'bar'baz"));
     }
 
     #[test]
     fn test_empty_input() {
         let tokens = tokenize("").unwrap();
-        assert_eq!(tokens.len(), 1);
-        assert!(matches!(tokens[0], Token::Eof));
+        // Eof is no longer included in output - empty input gives empty tokens
+        assert!(tokens.is_empty());
     }
 
     #[test]
     fn test_whitespace_only() {
         let tokens = tokenize("   \t\n  ").unwrap();
-        assert_eq!(tokens.len(), 1);
-        assert!(matches!(tokens[0], Token::Eof));
+        // Eof is no longer included in output - all whitespace is skipped, giving empty tokens
+        assert!(tokens.is_empty(), "Expected empty tokens for whitespace-only input");
     }
 
     #[test]
@@ -185,7 +189,8 @@ mod tests {
     #[test]
     fn test_complex_pipeline() {
         let tokens = tokenize("cat file | grep pattern | wc -l").unwrap();
-        assert_eq!(tokens.len(), 9);
+        // Eof no longer included: 8 tokens (was 9 with Eof)
+        assert_eq!(tokens.len(), 8);
         assert!(matches!(tokens[2], Token::Operator(Operator::Pipe)));
         assert!(matches!(tokens[5], Token::Operator(Operator::Pipe)));
     }
@@ -205,7 +210,8 @@ mod tests {
     #[test]
     fn test_quoted_newline() {
         let tokens = tokenize("'line1\nline2'").unwrap();
-        assert!(matches!(tokens[0], Token::Word(ref w) if w.contains('\n')));
+        // Newlines inside single quotes are preserved
+        assert!(matches!(tokens[0], Token::SingleQuoted(ref w) if w.contains('\n')));
     }
 
     #[test]

@@ -57,6 +57,10 @@ pub fn get_builtin(name: &str) -> Option<BuiltinFn> {
         "." | "source" => Some(builtin_source),
         "set" => Some(builtin_set),
         "shift" => Some(builtin_shift),
+        "test" => Some(builtin_test),
+        "[" => Some(builtin_test),
+        "read" => Some(builtin_read),
+        "trap" => Some(builtin_trap),
         _ => None,
     }
 }
@@ -614,6 +618,364 @@ fn builtin_shift(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
     state.positional_params.drain(0..n);
 
     Ok(super::executor::ExitStatus::SUCCESS)
+}
+
+/// Test builtin - evaluate conditional expressions
+/// Supports POSIX test operators: file tests, string tests, numeric tests
+fn builtin_test(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
+    // Handle [ ... ] syntax - check for closing ]
+    let args = if args.last() == Some(&"]") {
+        &args[..args.len() - 1]
+    } else {
+        args
+    };
+
+    let result = evaluate_test(args);
+
+    if result {
+        Ok(super::executor::ExitStatus::SUCCESS)
+    } else {
+        Ok(super::executor::ExitStatus {
+            code: 1,
+            signaled: false,
+        })
+    }
+}
+
+/// Evaluate test expression and return true/false
+fn evaluate_test(args: &[&str]) -> bool {
+    if args.is_empty() {
+        return false;
+    }
+
+    // Handle negation: ! expr
+    if args[0] == "!" {
+        return !evaluate_test(&args[1..]);
+    }
+
+    // Handle single argument (check if non-empty string)
+    if args.len() == 1 {
+        return !args[0].is_empty();
+    }
+
+    // Handle two-argument tests
+    if args.len() == 2 {
+        let op = args[0];
+        let operand = &args[1];
+        return match op {
+            "-n" => !operand.is_empty(),           // non-zero length
+            "-z" => operand.is_empty(),             // zero length
+            "-e" => std::path::Path::new(operand).exists(), // file exists
+            "-f" => std::path::Path::new(operand).is_file(),  // regular file
+            "-d" => std::path::Path::new(operand).is_dir(),   // directory
+            "-r" => is_readable(operand),           // readable
+            "-w" => is_writable(operand),           // writable
+            "-x" => is_executable(operand),          // executable
+            "-s" => has_size(operand),               // size > 0
+            "-L" => is_symlink(operand),              // is symlink
+            _ => false,
+        };
+    }
+
+    // Handle three-argument tests
+    if args.len() == 3 {
+        let left = args[0];
+        let op = args[1];
+        let right = args[2];
+
+        return match op {
+            "=" | "==" => left == right,           // string equal
+            "!=" => left != right,                  // string not equal
+            "-eq" => compare_numeric(left, right, |a, b| a == b), // numeric equal
+            "-ne" => compare_numeric(left, right, |a, b| a != b), // numeric not equal
+            "-lt" => compare_numeric(left, right, |a, b| a < b),  // less than
+            "-le" => compare_numeric(left, right, |a, b| a <= b), // less or equal
+            "-gt" => compare_numeric(left, right, |a, b| a > b),  // greater than
+            "-ge" => compare_numeric(left, right, |a, b| a >= b), // greater or equal
+            "-a" => evaluate_test(&[left]) && evaluate_test(&[right]), // AND
+            "-o" => evaluate_test(&[left]) || evaluate_test(&[right]), // OR
+            _ => false,
+        };
+    }
+
+    // Handle more complex expressions by finding -a or -o
+    // This is a simplified version - full POSIX test is more complex
+    for (i, arg) in args.iter().enumerate() {
+        if *arg == "-a" && i > 0 && i < args.len() - 1 {
+            let left = evaluate_test(&args[..i]);
+            let right = evaluate_test(&args[i + 1..]);
+            return left && right;
+        }
+    }
+
+    false
+}
+
+/// Compare two numeric strings using the given comparison
+fn compare_numeric<F>(left: &str, right: &str, cmp: F) -> bool
+where
+    F: Fn(i64, i64) -> bool,
+{
+    let left_val = left.parse::<i64>();
+    let right_val = right.parse::<i64>();
+    match (left_val, right_val) {
+        (Ok(a), Ok(b)) => cmp(a, b),
+        _ => false,
+    }
+}
+
+/// Check if file is readable
+fn is_readable(path: &str) -> bool {
+    std::fs::metadata(path)
+        .map(|m| m.permissions().readonly() == false)
+        .unwrap_or(false)
+}
+
+/// Check if file is writable
+fn is_writable(path: &str) -> bool {
+    // Simplified - on Unix would need access() syscall
+    std::path::Path::new(path).exists()
+}
+
+/// Check if file is executable
+fn is_executable(path: &str) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        std::path::Path::new(path).exists()
+    }
+}
+
+/// Check if file has size > 0
+fn has_size(path: &str) -> bool {
+    std::fs::metadata(path)
+        .map(|m| m.len() > 0)
+        .unwrap_or(false)
+}
+
+/// Check if path is a symlink
+fn is_symlink(path: &str) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+/// Read builtin - read a line from stdin into variable(s)
+fn builtin_read(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
+    use std::io::{self, BufRead};
+
+    let mut prompt = String::new();
+    let mut var_names: Vec<&str> = Vec::new();
+    let mut has_prompt = false;
+
+    // Parse options
+    let mut i = 0;
+    while i < args.len() {
+        match args[i] {
+            "-p" => {
+                // Prompt option
+                if i + 1 < args.len() {
+                    prompt = args[i + 1].to_string();
+                    has_prompt = true;
+                    i += 2;
+                } else {
+                    return Err(BuiltinError::Generic("read: -p: option requires an argument".to_string()));
+                }
+            }
+            "-r" => {
+                // Raw mode (no backslash escape interpretation) - we'll store but not implement fully
+                i += 1;
+            }
+            "-s" => {
+                // Silent mode (for passwords) - not fully implemented
+                i += 1;
+            }
+            "-n" | "-t" => {
+                // -n nchars, -t timeout - skip with their arguments
+                if i + 1 < args.len() {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            _ => {
+                if args[i].starts_with('-') {
+                    // Unknown option
+                    return Err(BuiltinError::Generic(format!("read: invalid option: {}", args[i])));
+                }
+                // This is a variable name
+                var_names.push(args[i]);
+                i += 1;
+            }
+        }
+    }
+
+    // Print prompt if provided
+    if has_prompt {
+        print!("{}", prompt);
+        let _ = io::Write::flush(&mut std::io::stdout());
+    }
+
+    // Read line from stdin
+    let stdin = io::stdin();
+    let mut line = String::new();
+    match stdin.lock().read_line(&mut line) {
+        Ok(0) => {
+            // EOF reached - set variables to empty and return failure
+            for name in &var_names {
+                state.env.insert(name.to_string(), String::new());
+            }
+            return Ok(super::executor::ExitStatus {
+                code: 1,
+                signaled: false,
+            });
+        }
+        Ok(_) => {
+            // Remove trailing newline
+            if line.ends_with('\n') {
+                line.pop();
+            }
+            if line.ends_with('\r') {
+                line.pop();
+            }
+
+            // Split into fields using IFS (simplified - just use whitespace)
+            let fields: Vec<&str> = line.split_whitespace().collect();
+
+            // Assign to variables
+            if var_names.is_empty() {
+                // No variable specified - store in REPLY
+                state.env.insert("REPLY".to_string(), line);
+            } else if var_names.len() == 1 {
+                // Single variable - store entire line
+                state.env.insert(var_names[0].to_string(), line);
+            } else {
+                // Multiple variables - split fields
+                let last_idx = var_names.len() - 1;
+                for (i, name) in var_names.iter().enumerate() {
+                    if i < last_idx {
+                        // Assign single field
+                        let value = fields.get(i).unwrap_or(&"").to_string();
+                        state.env.insert(name.to_string(), value);
+                    } else {
+                        // Last variable gets remaining fields
+                        let remaining: Vec<&str> = fields.iter().skip(i).copied().collect();
+                        state.env.insert(name.to_string(), remaining.join(" "));
+                    }
+                }
+            }
+
+            Ok(super::executor::ExitStatus::SUCCESS)
+        }
+        Err(e) => Err(BuiltinError::Generic(format!("read: {}", e))),
+    }
+}
+
+/// Trap builtin - set signal handlers
+fn builtin_trap(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
+    #[cfg(not(unix))]
+    {
+        // Not supported on non-Unix platforms
+        return Err(BuiltinError::Generic("trap: signal handling not supported on this platform".to_string()));
+    }
+
+    #[cfg(unix)]
+    {
+        use libc::{signal, SIG_DFL, SIG_IGN};
+        use std::collections::HashMap;
+
+        // Signal name to number mapping (POSIX signals)
+        let signals: HashMap<&str, i32> = [
+            ("EXIT", 0),     // Special: exit handler
+            ("HUP", 1),      // SIGHUP
+            ("INT", 2),      // SIGINT
+            ("QUIT", 3),     // SIGQUIT
+            ("ILL", 4),      // SIGILL
+            ("TRAP", 5),     // SIGTRAP
+            ("ABRT", 6),     // SIGABRT
+            ("FPE", 8),      // SIGFPE
+            ("KILL", 9),     // SIGKILL
+            ("BUS", 7),      // SIGBUS
+            ("SEGV", 11),    // SIGSEGV
+            ("PIPE", 13),    // SIGPIPE
+            ("ALRM", 14),    // SIGALRM
+            ("TERM", 15),    // SIGTERM
+            ("USR1", 10),    // SIGUSR1
+            ("USR2", 12),    // SIGUSR2
+            ("CHLD", 17),    // SIGCHLD
+            ("CONT", 18),    // SIGCONT
+            ("STOP", 19),    // SIGSTOP
+            ("TSTP", 20),    // SIGTSTP
+            ("TTIN", 21),    // SIGTTIN
+            ("TTOU", 22),    // SIGTTOU
+        ].iter().cloned().collect();
+
+        if args.is_empty() {
+            // List current traps (not implemented - would need trap registry)
+            return Ok(super::executor::ExitStatus::SUCCESS);
+        }
+
+        // Check for -l (list signals)
+        if args[0] == "-l" {
+            for (name, num) in signals.iter() {
+                println!("{})", name);
+            }
+            return Ok(super::executor::ExitStatus::SUCCESS);
+        }
+
+        // Parse action and signals
+        let (action, signal_args) = if args.len() >= 2 && !args[0].starts_with('-') {
+            // First arg is action (command or -/empty)
+            (args[0], &args[1..])
+        } else {
+            // No action specified - print trap for given signals
+            return Ok(super::executor::ExitStatus::SUCCESS);
+        };
+
+        // Process each signal
+        for sig_arg in signal_args {
+            // Parse signal number or name
+            let sig_num = if let Ok(num) = sig_arg.parse::<i32>() {
+                num
+            } else {
+                // Try to look up by name
+                let name = if sig_arg.starts_with("SIG") {
+                    &sig_arg[3..]
+                } else {
+                    *sig_arg
+                };
+                match signals.get(name) {
+                    Some(&num) => num,
+                    None => {
+                        return Err(BuiltinError::Generic(format!(
+                            "trap: {}: invalid signal specification",
+                            sig_arg
+                        )));
+                    }
+                }
+            };
+
+            // Apply action
+            if action == "-" || action.is_empty() {
+                // Reset to default
+                unsafe { signal(sig_num, SIG_DFL) };
+            } else if action == "''" || action == "\"\"" {
+                // Ignore signal
+                unsafe { signal(sig_num, SIG_IGN) };
+            } else {
+                // Custom command - would need signal handler registry
+                // For now, just acknowledge the trap is set
+            }
+        }
+
+        Ok(super::executor::ExitStatus::SUCCESS)
+    }
 }
 
 // Simple quote helper

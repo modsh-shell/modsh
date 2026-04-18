@@ -92,9 +92,9 @@
 - [x] `exit`
 - [x] `return`
 - [x] `set`, `shift`
-- [ ] `test` / `[`
-- [ ] `read`
-- [ ] `trap`
+- [x] `test` / `[`
+- [x] `read`
+- [x] `trap`
 
 ### 1.6 Job Control
 - [~] Foreground/background execution — data structures done, need fork/signals

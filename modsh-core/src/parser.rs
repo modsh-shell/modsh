@@ -267,7 +267,10 @@ impl Parser {
                 }
                 // Check if we hit Eof while expecting compound command terminators
                 let eof_keywords = ["then", "else", "fi", "do", "done", "esac", "}"];
-                matches!(self.peek(), Token::Word(w) if eof_keywords.contains(&w.as_str()))
+                {
+                    let token = self.peek();
+                    Self::is_word_token(token) && eof_keywords.contains(&Self::word_value(token).unwrap_or(""))
+                }
             }
         }
     }
@@ -298,7 +301,9 @@ impl Parser {
                 Operator::Pipe | Operator::And | Operator::Or | Operator::LBrace | Operator::LParen,
             ) => true,
             // Compound command keywords that need closing
-            Token::Word(w) => matches!(w.as_str(), "if" | "while" | "for" | "case" | "function"),
+            token if Self::is_word_token(token) => {
+                matches!(Self::word_value(token).unwrap_or(""), "if" | "while" | "for" | "case" | "function")
+            }
             _ => false,
         }
     }
@@ -316,7 +321,8 @@ impl Parser {
 
     /// Check if current token is a terminator word
     fn is_terminator_word(&self, terminators: &[&str]) -> bool {
-        matches!(self.peek(), Token::Word(w) if terminators.contains(&w.as_str()))
+        let token = self.peek();
+        Self::is_word_token(token) && terminators.contains(&Self::word_value(token).unwrap_or(""))
     }
 
     /// Check if current token is a terminator operator (`RBrace`, `RParen`, `Semicolon`)
@@ -340,7 +346,7 @@ impl Parser {
 
         match self.peek() {
             // Stop if we hit a terminator word or operator
-            Token::Word(w) if terminators.contains(&w.as_str()) => Ok(left),
+            token if Self::is_word_token(token) && terminators.contains(&Self::word_value(token).unwrap_or("")) => Ok(left),
             Token::Operator(Operator::RBrace) if terminators.contains(&"}") => Ok(left),
             Token::Operator(Operator::RParen) if terminators.contains(&")") => Ok(left),
             Token::Operator(Operator::Semicolon) if terminators.contains(&";") => Ok(left),
@@ -379,7 +385,7 @@ impl Parser {
         loop {
             match self.peek() {
                 // Stop at terminator words
-                Token::Word(w) if terminators.contains(&w.as_str()) => break,
+                token if Self::is_word_token(token) && terminators.contains(&Self::word_value(token).unwrap_or("")) => break,
                 Token::Operator(Operator::And) => {
                     self.advance();
                     let right = self.parse_pipeline_until(terminators)?;
@@ -414,8 +420,9 @@ impl Parser {
 
     fn parse_command_until(&mut self, terminators: &[&str]) -> Result<Command, ParseError> {
         // Check for terminator words first
-        if let Token::Word(w) = self.peek() {
-            if terminators.contains(&w.as_str()) {
+        if Self::is_word_token(self.peek()) {
+            let w = Self::word_value(self.peek()).unwrap_or("");
+            if terminators.contains(&w) {
                 return Err(ParseError::Unexpected(self.peek().clone()));
             }
         }
@@ -439,9 +446,9 @@ impl Parser {
                 self.expect_operator(Operator::RBrace)?;
                 Ok(Command::Group(Box::new(cmd)))
             }
-            Token::Word(w) => {
-                let word = w.clone(); // Clone to avoid borrow issues
-                                      // Check for compound command keywords (they take priority over terminators)
+            token if Self::is_word_token(token) => {
+                let word = Self::word_value(token).unwrap_or("").to_string();
+                // Check for compound command keywords (they take priority over terminators)
                 match word.as_str() {
                     "if" => self.parse_if(),
                     "for" => self.parse_for(),
@@ -475,20 +482,20 @@ impl Parser {
         let mut elif_branches = Vec::new();
         let else_branch = loop {
             match self.peek() {
-                Token::Word(w) if w == "elif" => {
+                token if Self::is_word_token(token) && Self::word_value(token) == Some("elif") => {
                     self.advance();
                     let elif_cond = Box::new(self.parse_list_until(&["then"])?);
                     self.expect_word("then")?;
                     let elif_then = Box::new(self.parse_list_until(&["elif", "else", "fi"])?);
                     elif_branches.push((elif_cond, elif_then));
                 }
-                Token::Word(w) if w == "else" => {
+                token if Self::is_word_token(token) && Self::word_value(token) == Some("else") => {
                     self.advance();
                     let else_cmd = Box::new(self.parse_list_until(&["fi"])?);
                     self.expect_word("fi")?;
                     break Some(else_cmd);
                 }
-                Token::Word(w) if w == "fi" => {
+                token if Self::is_word_token(token) && Self::word_value(token) == Some("fi") => {
                     self.advance();
                     break None;
                 }
@@ -514,7 +521,7 @@ impl Parser {
         self.expect_word("for")?;
         let var = self.expect_word_value()?;
 
-        let words = if matches!(self.peek(), Token::Word(w) if w == "in") {
+        let words = if Self::is_word_token(self.peek()) && Self::word_value(self.peek()) == Some("in") {
             self.advance();
             self.parse_for_words()
         } else {
@@ -533,13 +540,14 @@ impl Parser {
         let mut words = Vec::new();
         loop {
             match self.peek() {
-                Token::Word(w) if w == "do" => break,
+                token if Self::is_word_token(token) && Self::word_value(token) == Some("do") => break,
                 Token::Operator(Operator::Semicolon) => {
                     self.advance();
                     break;
                 }
-                Token::Word(w) => {
-                    words.push(w.clone());
+                token if Self::is_word_token(token) => {
+                    let val = Self::word_value(token).unwrap().to_string();
+                    words.push(val);
                     self.advance();
                 }
                 _ => break,
@@ -568,7 +576,7 @@ impl Parser {
         let mut clauses = Vec::new();
         loop {
             match self.peek() {
-                Token::Word(w) if w == "esac" => {
+                token if Self::is_word_token(token) && Self::word_value(token) == Some("esac") => {
                     self.advance();
                     break;
                 }
@@ -610,7 +618,7 @@ impl Parser {
         _terminators: &[&str],
     ) -> Result<Option<Command>, ParseError> {
         // Verify we're at the name token (safety check)
-        if !matches!(self.peek(), Token::Word(w) if w == name) {
+        if !(Self::is_word_token(self.peek()) && Self::word_value(self.peek()) == Some(name)) {
             return Ok(None);
         }
         // Look ahead: next tokens should be () for function definition
@@ -649,7 +657,7 @@ impl Parser {
                 self.expect_operator(Operator::RBrace)?;
                 Ok(body)
             }
-            Token::Word(w) => match w.as_str() {
+            token if Self::is_word_token(token) => match Self::word_value(token).unwrap_or("") {
                 "if" => Ok(Box::new(self.parse_if()?)),
                 "for" => Ok(Box::new(self.parse_for()?)),
                 "while" => Ok(Box::new(self.parse_while()?)),
@@ -678,7 +686,7 @@ impl Parser {
                 }
                 Ok(())
             }
-            Token::Word(w) if w == "esac" => {
+            token if Self::is_word_token(token) && Self::word_value(token) == Some("esac") => {
                 // Allow missing ;; before esac (optional in some shells)
                 Ok(())
             }
@@ -693,8 +701,9 @@ impl Parser {
     fn parse_case_patterns(&mut self) -> Result<Vec<String>, ParseError> {
         let mut patterns = Vec::new();
         loop {
-            if let Token::Word(w) = self.peek() {
-                patterns.push(w.clone());
+            if Self::is_word_token(self.peek()) {
+                let val = Self::word_value(self.peek()).unwrap().to_string();
+                patterns.push(val);
                 self.advance();
                 match self.peek() {
                     Token::Operator(Operator::Pipe) => {
@@ -724,7 +733,7 @@ impl Parser {
     /// Expect a specific word keyword
     fn expect_word(&mut self, expected: &str) -> Result<(), ParseError> {
         match self.peek() {
-            Token::Word(w) if w == expected => {
+            token if Self::is_word_token(token) && Self::word_value(token) == Some(expected) => {
                 self.advance();
                 Ok(())
             }
@@ -735,11 +744,26 @@ impl Parser {
         }
     }
 
+    /// Check if token is a word-like token (Word, SingleQuoted, or DoubleQuoted)
+    fn is_word_token(token: &Token) -> bool {
+        matches!(token, Token::Word(_) | Token::SingleQuoted(_) | Token::DoubleQuoted(_))
+    }
+
+    /// Extract the string value from a word-like token
+    fn word_value(token: &Token) -> Option<&str> {
+        match token {
+            Token::Word(w) => Some(w.as_str()),
+            Token::SingleQuoted(s) => Some(s.as_str()),
+            Token::DoubleQuoted(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
     /// Expect a word and return its value
     fn expect_word_value(&mut self) -> Result<String, ParseError> {
         match self.peek() {
-            Token::Word(w) => {
-                let val = w.clone();
+            token if Self::is_word_token(token) => {
+                let val = Self::word_value(token).unwrap().to_string();
                 self.advance();
                 Ok(val)
             }
@@ -756,8 +780,9 @@ impl Parser {
         loop {
             self.skip_comments();
             match self.peek() {
-                Token::Word(w) => {
-                    cmd.words.push(w.clone());
+                token if Self::is_word_token(token) => {
+                    let val = Self::word_value(token).unwrap().to_string();
+                    cmd.words.push(val);
                     self.advance();
                 }
                 Token::Redirect(r) => {
@@ -796,7 +821,7 @@ impl Parser {
                 // In full implementation, this would be handled specially
                 (None, RedirectKind::Heredoc, body)
             }
-            LRedirect::Herestring { word } => (None, RedirectKind::Herestring, word),
+            LRedirect::Herestring { fd, word } => (fd, RedirectKind::Herestring, word),
             LRedirect::ReadWrite { fd } => (fd, RedirectKind::ReadWrite, String::new()),
             LRedirect::OutputStdoutStderr => (None, RedirectKind::OutputStdoutStderr, String::new()),
             LRedirect::AppendStdoutStderr => (None, RedirectKind::AppendStdoutStderr, String::new()),
@@ -805,14 +830,15 @@ impl Parser {
         if needs_target {
             // Clone the token to avoid borrow issues
             let next_token = self.peek_next().clone();
-            if let Token::Word(t) = next_token {
+            if let Some(target_str) = Self::word_value(&next_token) {
+                let target = target_str.to_string();
                 // Advance past the redirect token AND the target word
                 self.advance(); // consume redirect
                 self.advance(); // consume target
                 Ok(Redirect {
                     fd,
                     kind,
-                    target: t,
+                    target,
                 })
             } else {
                 // Just consume the redirect token, error on missing target

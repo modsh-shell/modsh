@@ -105,6 +105,9 @@ impl<'a> Lexer<'a> {
     }
 
     fn skip_whitespace(&mut self) {
+        // Skip all ASCII whitespace including newlines
+        // TODO: In a full POSIX shell implementation, newlines should be
+        // tokenized separately as command terminators (equivalent to ;)
         while !self.is_at_end() && self.peek().is_ascii_whitespace() {
             self.advance();
         }
@@ -135,7 +138,7 @@ impl<'a> Lexer<'a> {
                         } else {
                             self.read_word_content()?
                         };
-                        Ok(Token::Redirect(Redirect::Herestring { word }))
+                        Ok(Token::Redirect(Redirect::Herestring { fd: None, word }))
                     } else {
                         let (delimiter, quoted) = self.read_delimiter()?;
                         let body = self.read_heredoc_body(&delimiter)?;
@@ -181,7 +184,7 @@ impl<'a> Lexer<'a> {
                         } else {
                             self.read_word_content()?
                         };
-                        Ok(Token::Redirect(Redirect::Herestring { word }))
+                        Ok(Token::Redirect(Redirect::Herestring { fd, word }))
                     } else {
                         let (delimiter, quoted) = self.read_delimiter()?;
                         let body = self.read_heredoc_body(&delimiter)?;
@@ -246,20 +249,26 @@ impl<'a> Lexer<'a> {
         let mut body = String::new();
         let mut first_line = true;
 
-        loop {
-            // Read until we find a line that matches the delimiter
-            // First, consume any remaining content on current line if not at newline
+        // First, consume any remaining content on the delimiter line
+        // but check if we're at end-of-input (empty heredoc)
+        if !self.is_at_end() && self.peek() != '\n' {
             while !self.is_at_end() && self.peek() != '\n' {
                 self.advance();
             }
+        }
 
-            // Now we're at newline or end - consume the newline to start next line
-            if self.is_at_end() {
-                // End of input without finding delimiter
-                return Err(LexError::UnterminatedHeredoc);
-            }
-            self.advance(); // consume \n
+        // If we're at end of input now, there's no body and no delimiter
+        // This is an error - heredoc must have a closing delimiter
+        if self.is_at_end() {
+            return Err(LexError::UnterminatedHeredoc);
+        }
 
+        // If there's a newline, consume it to start reading body lines
+        if self.peek() == '\n' {
+            self.advance();
+        }
+
+        loop {
             // Check if this line is the delimiter
             let line_start = self.pos;
             while !self.is_at_end() && self.peek() != '\n' {
@@ -271,7 +280,7 @@ impl<'a> Lexer<'a> {
             let trimmed = line.trim_start_matches('\t');
             if trimmed == delimiter {
                 // Found the closing delimiter - don't include it in body
-                // Consume the newline after delimiter
+                // Consume the newline after delimiter if present
                 if !self.is_at_end() && self.peek() == '\n' {
                     self.advance();
                 }
@@ -284,6 +293,14 @@ impl<'a> Lexer<'a> {
             }
             first_line = false;
             body.push_str(line);
+
+            // If we're at end of input, we never found the delimiter
+            if self.is_at_end() {
+                return Err(LexError::UnterminatedHeredoc);
+            }
+
+            // Consume the newline to move to next line
+            self.advance();
         }
 
         Ok(body)
@@ -309,10 +326,15 @@ impl<'a> Lexer<'a> {
             return Err(LexError::UnterminatedQuote);
         }
 
-        let word = self.input[start..self.pos].to_string();
+        let content = self.input[start..self.pos].to_string();
         self.advance(); // consume closing quote
 
-        Ok(Token::Word(word))
+        // Return appropriate token type based on quote char
+        if quote == '\'' {
+            Ok(Token::SingleQuoted(content))
+        } else {
+            Ok(Token::DoubleQuoted(content))
+        }
     }
 
     /// Read word content as a string (used by both `read_word` and here-string)
@@ -327,13 +349,6 @@ impl<'a> Lexer<'a> {
                 break;
             }
 
-            // # only starts a comment at word boundary (preceded by whitespace)
-            // Inside a word, # is just a regular character
-            if ch == '#' && start == self.pos {
-                // At start of word, # is a comment - but caller handles this
-                break;
-            }
-
             if ch == '\\' {
                 self.advance();
                 if !self.is_at_end() {
@@ -344,7 +359,15 @@ impl<'a> Lexer<'a> {
                 let quote = ch;
                 self.advance();
                 while !self.is_at_end() && self.peek() != quote {
-                    self.advance();
+                    // Handle backslash escapes inside double quotes
+                    if self.peek() == '\\' && quote == '"' {
+                        self.advance(); // skip backslash
+                        if !self.is_at_end() {
+                            self.advance(); // skip escaped char
+                        }
+                    } else {
+                        self.advance();
+                    }
                 }
                 if self.is_at_end() {
                     return Err(LexError::UnterminatedQuote);
@@ -394,7 +417,7 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, LexError> {
     loop {
         let token = lexer.next_token()?;
         if token == Token::Eof {
-            tokens.push(token);
+            // Don't include Eof in output - it's a sentinel, not a real token
             break;
         }
         tokens.push(token);
