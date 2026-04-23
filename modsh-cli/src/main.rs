@@ -32,6 +32,9 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Set up signal handlers for job control (SIGCHLD, SIGINT, SIGQUIT)
+    modsh_core::jobcontrol::signals::setup_handlers();
+
     let args = Args::parse();
 
     // Load config
@@ -89,7 +92,9 @@ fn run_script(file: &PathBuf, config: &Config) -> Result<()> {
 }
 
 #[allow(clippy::unnecessary_wraps)]
-fn run_interactive(config: &Config, _no_ai: bool) -> Result<()> {
+fn run_interactive(_config: &Config, _no_ai: bool) -> Result<()> {
+    use modsh_core::executor::Executor;
+    use modsh_core::parser::parse;
     use modsh_interactive::editor::LineEditor;
     use modsh_interactive::history::HistoryEngine;
     use modsh_interactive::prompt::{PromptConfig, PromptEngine};
@@ -97,6 +102,7 @@ fn run_interactive(config: &Config, _no_ai: bool) -> Result<()> {
     let mut editor = LineEditor::new();
     let mut prompt = PromptEngine::new(PromptConfig::default());
     let mut history = HistoryEngine::new();
+    let mut executor = Executor::new();
 
     // Load history
     let history_file = dirs::data_dir().map_or_else(
@@ -127,15 +133,22 @@ fn run_interactive(config: &Config, _no_ai: bool) -> Result<()> {
                     break;
                 }
 
+                // Reap any completed background jobs before executing
+                executor.job_control.reap_children();
+
                 // Execute
                 let start = std::time::Instant::now();
 
-                match run_command(trimmed, config) {
-                    Ok(()) => {
+                let result = parse(trimmed)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|ast| executor.execute(&ast).map_err(anyhow::Error::from));
+
+                match result {
+                    Ok(status) => {
                         let duration =
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                        history.add_command(line.clone(), 0, duration);
-                        prompt.set_exit_code(0);
+                        history.add_command(line.clone(), status.code, duration);
+                        prompt.set_exit_code(status.code);
                     }
                     Err(e) => {
                         let duration =

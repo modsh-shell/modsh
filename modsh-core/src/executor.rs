@@ -601,6 +601,7 @@ impl Executor {
                 aliases: &mut self.aliases,
                 positional_params: &mut self.positional_params,
                 options: &mut self.shell_options,
+                job_control: Some(&mut self.job_control),
             };
             match builtin(&args, &mut state) {
                 Ok(status) => return Ok(status),

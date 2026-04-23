@@ -105,6 +105,7 @@ impl Highlighter {
             }
             Token::Operator(_) | Token::Redirect(_) => Style::OPERATOR,
             Token::Comment(_) => Style::COMMENT,
+            Token::SingleQuoted(_) | Token::DoubleQuoted(_) => Style::ARG,
             Token::Eof => Style::ARG,
         }
     }
@@ -141,6 +142,8 @@ fn token_text(token: &Token) -> String {
             Redirect::OutputStdoutStderr => "&>".to_string(),
             Redirect::AppendStdoutStderr => "&>>".to_string(),
         },
+        Token::SingleQuoted(s) => format!("'{s}'"),
+        Token::DoubleQuoted(s) => format!("\"{s}\""),
         Token::Comment(c) => format!("#{c}"),
         Token::Eof => String::new(),
     }

@@ -133,33 +133,142 @@ impl JobControl {
 
     /// Bring a job to the foreground
     ///
+    /// Gives terminal control to the job's process group, waits for it to complete
+    /// or stop, then restores terminal control to the shell.
+    ///
     /// # Errors
-    /// Returns an error if the job ID is not found
-    pub fn foreground(&mut self, id: usize) -> Result<(), String> {
-        let _job = self.jobs.get(&id).ok_or("No such job")?;
+    /// Returns an error if the job ID is not found or terminal control fails
+    #[cfg(unix)]
+    pub fn foreground(&mut self, id: usize) -> Result<i32, String> {
+        let job = self.jobs.get(&id).ok_or("No such job")?;
+        let pgid = job.pgid.ok_or("Job has no process group")?;
 
-        // TODO: Implement proper terminal control with tcsetpgrp
-        // This requires unsafe libc calls on Unix
+        let shell_pgid = unsafe { libc::getpgrp() };
+        let stdin_fd = libc::STDIN_FILENO;
+
+        // Give terminal control to the job's process group
+        unsafe {
+            if libc::tcsetpgrp(stdin_fd, pgid as libc::pid_t) < 0 {
+                return Err("tcsetpgrp failed".to_string());
+            }
+        }
+
+        // If the job was stopped, continue it
+        if job.status == JobStatus::Stopped {
+            unsafe {
+                libc::killpg(pgid as libc::pid_t, libc::SIGCONT);
+            }
+            if let Some(j) = self.jobs.get_mut(&id) {
+                j.status = JobStatus::Running;
+            }
+        }
 
         self.update_current_job(id);
-        Ok(())
+
+        // Wait for the job to complete or stop
+        let mut status: libc::c_int = 0;
+        let result = unsafe { libc::waitpid(-(pgid as libc::pid_t), &mut status, libc::WUNTRACED) };
+
+        // Restore terminal control to the shell
+        unsafe {
+            let _ = libc::tcsetpgrp(stdin_fd, shell_pgid);
+        }
+
+        if result < 0 {
+            return Err("waitpid failed".to_string());
+        }
+
+        // Update job status based on wait result
+        let exit_code = if libc::WIFEXITED(status) {
+            let code = libc::WEXITSTATUS(status);
+            if let Some(j) = self.jobs.get_mut(&id) {
+                j.status = JobStatus::Completed;
+            }
+            i32::from(code)
+        } else if libc::WIFSIGNALED(status) {
+            if let Some(j) = self.jobs.get_mut(&id) {
+                j.status = JobStatus::Killed;
+            }
+            128 + libc::WTERMSIG(status)
+        } else if libc::WIFSTOPPED(status) {
+            if let Some(j) = self.jobs.get_mut(&id) {
+                j.status = JobStatus::Stopped;
+            }
+            148 // 128 + SIGTSTP (20)
+        } else {
+            1
+        };
+
+        Ok(exit_code)
+    }
+
+    /// Non-Unix stub for foreground
+    #[cfg(not(unix))]
+    pub fn foreground(&mut self, _id: usize) -> Result<i32, String> {
+        Err("Job control not supported on this platform".to_string())
     }
 
     /// Continue a job in the background
     ///
+    /// Sends SIGCONT to the job's process group if it was stopped.
+    ///
     /// # Errors
     /// Returns an error if the job ID is not found
+    #[cfg(unix)]
     pub fn background(&mut self, id: usize) -> Result<(), String> {
         let job = self.jobs.get_mut(&id).ok_or("No such job")?;
 
         if job.status == JobStatus::Stopped {
+            if let Some(pgid) = job.pgid {
+                unsafe {
+                    libc::killpg(pgid as libc::pid_t, libc::SIGCONT);
+                }
+            }
             job.status = JobStatus::Running;
-            // TODO: Send SIGCONT to process group
         }
 
         println!("[{}] {}", id, job.command);
         Ok(())
     }
+
+    /// Non-Unix stub for background
+    #[cfg(not(unix))]
+    pub fn background(&mut self, _id: usize) -> Result<(), String> {
+        Err("Job control not supported on this platform".to_string())
+    }
+
+    /// Reap any children that have terminated (non-blocking)
+    ///
+    /// Call this periodically or after receiving SIGCHLD.
+    #[cfg(unix)]
+    pub fn reap_children(&mut self) {
+        loop {
+            let mut status: libc::c_int = 0;
+            let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
+
+            if pid <= 0 {
+                break;
+            }
+
+            // Find the job containing this process
+            for job in self.jobs.values_mut() {
+                if job.processes.iter().any(|p| p.pid == pid as u32) {
+                    if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+                        // Check if all processes in the job are done
+                        // For now, mark the job as completed
+                        job.status = JobStatus::Completed;
+                    } else if libc::WIFSTOPPED(status) {
+                        job.status = JobStatus::Stopped;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Non-Unix stub for reap_children
+    #[cfg(not(unix))]
+    pub fn reap_children(&mut self) {}
 
     /// Clean up completed jobs
     pub fn cleanup(&mut self) {
@@ -176,14 +285,61 @@ impl Default for JobControl {
 
 /// Signal handling for job control
 pub mod signals {
-    /// Set up signal handlers for job control
-    pub fn setup_handlers() {
-        // TODO: Install signal handlers for:
-        // - SIGINT (Ctrl+C) - interrupt foreground job
-        // - SIGTSTP (Ctrl+Z) - stop foreground job
-        // - SIGCHLD - child process status changed
-        // - SIGHUP - terminal disconnected
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-        // This requires platform-specific unsafe code
+    /// Flag set by SIGCHLD handler to indicate children need reaping
+    static SIGCHLD_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+    /// Check if SIGCHLD was received since last check
+    pub fn sigchld_pending() -> bool {
+        SIGCHLD_RECEIVED.swap(false, Ordering::SeqCst)
+    }
+
+    /// SIGCHLD handler — async-signal-safe, just sets a flag
+    extern "C" fn sigchld_handler(_sig: libc::c_int) {
+        SIGCHLD_RECEIVED.store(true, Ordering::SeqCst);
+    }
+
+    /// Set up signal handlers for job control
+    ///
+    /// # Safety
+    /// This function uses `sigaction` which is async-signal-safe.
+    /// Should be called once during shell initialization.
+    #[cfg(unix)]
+    pub fn setup_handlers() {
+        unsafe {
+            // SIGCHLD — child process status changed
+            let sa = libc::sigaction {
+                sa_sigaction: sigchld_handler as *const () as usize,
+                sa_mask: std::mem::zeroed(),
+                sa_flags: libc::SA_RESTART,
+                sa_restorer: None,
+            };
+            libc::sigaction(libc::SIGCHLD, &sa, std::ptr::null_mut());
+
+            // SIGINT — shell ignores in interactive mode (sent to fg process group via terminal)
+            let sa_int = libc::sigaction {
+                sa_sigaction: libc::SIG_IGN,
+                sa_mask: std::mem::zeroed(),
+                sa_flags: 0,
+                sa_restorer: None,
+            };
+            libc::sigaction(libc::SIGINT, &sa_int, std::ptr::null_mut());
+
+            // SIGQUIT — shell ignores in interactive mode
+            let sa_quit = libc::sigaction {
+                sa_sigaction: libc::SIG_IGN,
+                sa_mask: std::mem::zeroed(),
+                sa_flags: 0,
+                sa_restorer: None,
+            };
+            libc::sigaction(libc::SIGQUIT, &sa_quit, std::ptr::null_mut());
+        }
+    }
+
+    /// Non-Unix stub
+    #[cfg(not(unix))]
+    pub fn setup_handlers() {
+        // No-op on non-Unix platforms
     }
 }

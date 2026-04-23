@@ -33,6 +33,8 @@ pub struct ShellState<'a> {
     pub positional_params: &'a mut Vec<String>,
     /// Shell options (set -e, -x, etc.)
     pub options: &'a mut super::executor::ShellOptions,
+    /// Job control manager (for fg, bg, jobs builtins)
+    pub job_control: Option<&'a mut super::jobcontrol::JobControl>,
 }
 
 /// Builtin function type
@@ -61,6 +63,9 @@ pub fn get_builtin(name: &str) -> Option<BuiltinFn> {
         "[" => Some(builtin_test),
         "read" => Some(builtin_read),
         "trap" => Some(builtin_trap),
+        "jobs" => Some(builtin_jobs),
+        "fg" => Some(builtin_fg),
+        "bg" => Some(builtin_bg),
         _ => None,
     }
 }
@@ -1004,6 +1009,155 @@ fn builtin_trap(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
         }
 
         Ok(super::executor::ExitStatus::SUCCESS)
+    }
+}
+
+/// Jobs builtin — list background jobs
+fn builtin_jobs(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
+    let job_control = match state.job_control.as_mut() {
+        Some(jc) => jc,
+        None => {
+            return Err(BuiltinError::Generic(
+                "jobs: job control not available".to_string(),
+            ));
+        }
+    };
+
+    let long_format = args.iter().any(|&a| a == "-l" || a == "-p");
+
+    for job in job_control.list_jobs() {
+        let status_str = match job.status {
+            super::jobcontrol::JobStatus::Running => "Running",
+            super::jobcontrol::JobStatus::Stopped => "Stopped",
+            super::jobcontrol::JobStatus::Completed => "Done",
+            super::jobcontrol::JobStatus::Killed => "Killed",
+        };
+
+        let current = if job_control.current_job() == Some(job.id) {
+            "+"
+        } else if job_control.previous_job() == Some(job.id) {
+            "-"
+        } else {
+            " "
+        };
+
+        if long_format {
+            if let Some(pgid) = job.pgid {
+                println!(
+                    "[{}] {} {} {} {}",
+                    job.id, current, pgid, status_str, job.command
+                );
+            } else {
+                println!("[{}] {} {} {}", job.id, current, status_str, job.command);
+            }
+        } else {
+            println!("[{}] {} {} {}", job.id, current, status_str, job.command);
+        }
+    }
+
+    Ok(super::executor::ExitStatus::SUCCESS)
+}
+
+/// Parse a job specification string (e.g., "%1", "%%", "%-")
+fn parse_job_spec(spec: &str) -> Result<usize, String> {
+    if spec.starts_with('%') {
+        let inner = &spec[1..];
+        match inner {
+            "%" | "" => Ok(0),     // current job (special value)
+            "-" => Ok(usize::MAX), // previous job (special value)
+            _ => inner
+                .parse::<usize>()
+                .map_err(|_| format!("fg: {}: no such job", spec)),
+        }
+    } else {
+        spec.parse::<usize>()
+            .map_err(|_| format!("fg: {}: no such job", spec))
+    }
+}
+
+/// Resolve job spec to actual job ID using job control
+fn resolve_job_id(
+    spec: &str,
+    job_control: &super::jobcontrol::JobControl,
+) -> Result<usize, String> {
+    let parsed = parse_job_spec(spec)?;
+    if parsed == 0 {
+        // Current job
+        job_control
+            .current_job()
+            .ok_or_else(|| "fg: no current job".to_string())
+    } else if parsed == usize::MAX {
+        // Previous job
+        job_control
+            .previous_job()
+            .ok_or_else(|| "fg: no previous job".to_string())
+    } else {
+        // Explicit job ID
+        if job_control.get_job(parsed).is_some() {
+            Ok(parsed)
+        } else {
+            Err(format!("fg: %{}: no such job", parsed))
+        }
+    }
+}
+
+/// Foreground builtin — bring job to foreground
+fn builtin_fg(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
+    let job_control = match state.job_control.as_mut() {
+        Some(jc) => jc,
+        None => {
+            return Err(BuiltinError::Generic(
+                "fg: job control not available".to_string(),
+            ));
+        }
+    };
+
+    let job_spec = if args.is_empty() { "%" } else { args[0] };
+    let job_id = resolve_job_id(job_spec, job_control).map_err(BuiltinError::Generic)?;
+
+    #[cfg(unix)]
+    {
+        match job_control.foreground(job_id) {
+            Ok(_status) => Ok(super::executor::ExitStatus::SUCCESS),
+            Err(e) => Err(BuiltinError::Generic(e)),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        Err(BuiltinError::Generic(
+            "fg: job control not supported on this platform".to_string(),
+        ))
+    }
+}
+
+/// Background builtin — continue stopped job in background
+fn builtin_bg(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
+    let job_control = match state.job_control.as_mut() {
+        Some(jc) => jc,
+        None => {
+            return Err(BuiltinError::Generic(
+                "bg: job control not available".to_string(),
+            ));
+        }
+    };
+
+    let job_spec = if args.is_empty() { "%" } else { args[0] };
+    let job_id = resolve_job_id(job_spec, job_control).map_err(BuiltinError::Generic)?;
+
+    #[cfg(unix)]
+    {
+        match job_control.background(job_id) {
+            Ok(()) => Ok(super::executor::ExitStatus::SUCCESS),
+            Err(e) => Err(BuiltinError::Generic(e)),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        Err(BuiltinError::Generic(
+            "bg: job control not supported on this platform".to_string(),
+        ))
     }
 }
 
