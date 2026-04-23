@@ -134,7 +134,9 @@ fn run_interactive(_config: &Config, _no_ai: bool) -> Result<()> {
                 }
 
                 // Reap any completed background jobs before executing
-                executor.job_control.reap_children();
+                if modsh_core::jobcontrol::signals::sigchld_pending() {
+                    executor.job_control.reap_children();
+                }
 
                 // Execute
                 let start = std::time::Instant::now();

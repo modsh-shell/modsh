@@ -1059,7 +1059,7 @@ fn builtin_jobs(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
 }
 
 /// Parse a job specification string (e.g., "%1", "%%", "%-")
-fn parse_job_spec(spec: &str) -> Result<usize, String> {
+fn parse_job_spec(spec: &str, builtin_name: &str) -> Result<usize, String> {
     if spec.starts_with('%') {
         let inner = &spec[1..];
         match inner {
@@ -1067,36 +1067,37 @@ fn parse_job_spec(spec: &str) -> Result<usize, String> {
             "-" => Ok(usize::MAX), // previous job (special value)
             _ => inner
                 .parse::<usize>()
-                .map_err(|_| format!("fg: {}: no such job", spec)),
+                .map_err(|_| format!("{builtin_name}: {spec}: no such job")),
         }
     } else {
         spec.parse::<usize>()
-            .map_err(|_| format!("fg: {}: no such job", spec))
+            .map_err(|_| format!("{builtin_name}: {spec}: no such job"))
     }
 }
 
 /// Resolve job spec to actual job ID using job control
 fn resolve_job_id(
     spec: &str,
+    builtin_name: &str,
     job_control: &super::jobcontrol::JobControl,
 ) -> Result<usize, String> {
-    let parsed = parse_job_spec(spec)?;
+    let parsed = parse_job_spec(spec, builtin_name)?;
     if parsed == 0 {
         // Current job
         job_control
             .current_job()
-            .ok_or_else(|| "fg: no current job".to_string())
+            .ok_or_else(|| format!("{builtin_name}: no current job"))
     } else if parsed == usize::MAX {
         // Previous job
         job_control
             .previous_job()
-            .ok_or_else(|| "fg: no previous job".to_string())
+            .ok_or_else(|| format!("{builtin_name}: no previous job"))
     } else {
         // Explicit job ID
         if job_control.get_job(parsed).is_some() {
             Ok(parsed)
         } else {
-            Err(format!("fg: %{}: no such job", parsed))
+            Err(format!("{builtin_name}: %{parsed}: no such job"))
         }
     }
 }
@@ -1113,12 +1114,15 @@ fn builtin_fg(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
     };
 
     let job_spec = if args.is_empty() { "%" } else { args[0] };
-    let job_id = resolve_job_id(job_spec, job_control).map_err(BuiltinError::Generic)?;
+    let job_id = resolve_job_id(job_spec, "fg", job_control).map_err(BuiltinError::Generic)?;
 
     #[cfg(unix)]
     {
         match job_control.foreground(job_id) {
-            Ok(_status) => Ok(super::executor::ExitStatus::SUCCESS),
+            Ok(status) => Ok(super::executor::ExitStatus {
+                code: status.clamp(0, 255) as u8,
+                signaled: status > 128,
+            }),
             Err(e) => Err(BuiltinError::Generic(e)),
         }
     }
@@ -1143,7 +1147,7 @@ fn builtin_bg(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
     };
 
     let job_spec = if args.is_empty() { "%" } else { args[0] };
-    let job_id = resolve_job_id(job_spec, job_control).map_err(BuiltinError::Generic)?;
+    let job_id = resolve_job_id(job_spec, "bg", job_control).map_err(BuiltinError::Generic)?;
 
     #[cfg(unix)]
     {

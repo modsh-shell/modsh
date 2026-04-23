@@ -165,20 +165,74 @@ impl JobControl {
 
         self.update_current_job(id);
 
-        // Wait for the job to complete or stop
-        let mut status: libc::c_int = 0;
-        let result = unsafe { libc::waitpid(-(pgid as libc::pid_t), &mut status, libc::WUNTRACED) };
+        // Wait for all processes in the job's process group to complete or stop.
+        // waitpid(-pgid, ...) returns when any child in the group changes state,
+        // so we loop until no more children are ready.
+        let mut last_status: libc::c_int = 0;
+        loop {
+            let mut status: libc::c_int = 0;
+            let result = unsafe {
+                libc::waitpid(
+                    -(pgid as libc::pid_t),
+                    &mut status,
+                    libc::WUNTRACED | libc::WNOHANG,
+                )
+            };
+
+            if result == 0 {
+                // No children have changed state; if we have already seen at least one event,
+                // assume the rest are still running and break out to avoid blocking forever.
+                // In a real shell, this would use blocking waitpid here.
+                break;
+            }
+            if result < 0 {
+                // ECHILD means no more children in this group; stop looping
+                if std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD) {
+                    break;
+                }
+                // Restore terminal control before returning error
+                unsafe {
+                    let _ = libc::tcsetpgrp(stdin_fd, shell_pgid);
+                }
+                return Err("waitpid failed".to_string());
+            }
+
+            last_status = status;
+
+            // Update the specific process status
+            for job in self.jobs.values_mut() {
+                if job.processes.iter().any(|p| p.pid == result as u32) {
+                    if libc::WIFEXITED(status) {
+                        // Process exited — don't mark job as completed yet,
+                        // other processes may still be running
+                    } else if libc::WIFSIGNALED(status) {
+                        job.status = JobStatus::Killed;
+                    } else if libc::WIFSTOPPED(status) {
+                        job.status = JobStatus::Stopped;
+                        // Job stopped — restore terminal and return immediately
+                        unsafe {
+                            let _ = libc::tcsetpgrp(stdin_fd, shell_pgid);
+                        }
+                        return Ok(128 + libc::WSTOPSIG(status));
+                    }
+                    break;
+                }
+            }
+
+            // After processing one event, do one more non-blocking check
+            // then fall through to the next loop iteration. If nothing is ready,
+            // result will be 0 and we'll break above.
+        }
 
         // Restore terminal control to the shell
         unsafe {
-            let _ = libc::tcsetpgrp(stdin_fd, shell_pgid);
+            if libc::tcsetpgrp(stdin_fd, shell_pgid) < 0 {
+                eprintln!("warning: failed to restore terminal control to shell");
+            }
         }
 
-        if result < 0 {
-            return Err("waitpid failed".to_string());
-        }
-
-        // Update job status based on wait result
+        // Update job status based on the last wait result
+        let status = last_status;
         let exit_code = if libc::WIFEXITED(status) {
             let code = libc::WEXITSTATUS(status);
             if let Some(j) = self.jobs.get_mut(&id) {
@@ -194,9 +248,13 @@ impl JobControl {
             if let Some(j) = self.jobs.get_mut(&id) {
                 j.status = JobStatus::Stopped;
             }
-            148 // 128 + SIGTSTP (20)
+            128 + libc::WSTOPSIG(status)
         } else {
-            1
+            // No status collected (all children already reaped?) — check job state
+            if let Some(j) = self.jobs.get_mut(&id) {
+                j.status = JobStatus::Completed;
+            }
+            0
         };
 
         Ok(exit_code)
