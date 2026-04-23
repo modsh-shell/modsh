@@ -401,3 +401,77 @@ pub mod signals {
         // No-op on non-Unix platforms
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_and_get_job() {
+        let mut jc = JobControl::new();
+        let id = jc.add_job("sleep 100".to_string(), Some(1234));
+        assert_eq!(id, 1);
+
+        let job = jc.get_job(id).unwrap();
+        assert_eq!(job.command, "sleep 100");
+        assert_eq!(job.pgid, Some(1234));
+        assert_eq!(job.status, JobStatus::Running);
+        assert_eq!(job.processes.len(), 0);
+    }
+
+    #[test]
+    fn test_list_jobs_returns_all() {
+        let mut jc = JobControl::new();
+        jc.add_job("a".to_string(), None);
+        jc.add_job("b".to_string(), None);
+
+        let jobs = jc.list_jobs();
+        assert_eq!(jobs.len(), 2);
+    }
+
+    #[test]
+    fn test_update_status() {
+        let mut jc = JobControl::new();
+        let id = jc.add_job("sleep 100".to_string(), None);
+        jc.update_status(id, JobStatus::Stopped);
+
+        assert_eq!(jc.get_job(id).unwrap().status, JobStatus::Stopped);
+    }
+
+    #[test]
+    fn test_current_and_previous_job() {
+        let mut jc = JobControl::new();
+        let id1 = jc.add_job("a".to_string(), None);
+        let id2 = jc.add_job("b".to_string(), None);
+
+        // current_job tracks the latest foreground job
+        jc.update_current_job(id1);
+        assert_eq!(jc.current_job(), Some(id1));
+
+        jc.update_current_job(id2);
+        assert_eq!(jc.current_job(), Some(id2));
+        assert_eq!(jc.previous_job(), Some(id1));
+    }
+
+    #[test]
+    fn test_cleanup_removes_completed() {
+        let mut jc = JobControl::new();
+        let id = jc.add_job("done".to_string(), None);
+        jc.mark_completed(id);
+        assert_eq!(jc.list_jobs().len(), 1);
+
+        jc.cleanup();
+        assert_eq!(jc.list_jobs().len(), 0);
+    }
+
+    #[test]
+    fn test_cleanup_keeps_running() {
+        let mut jc = JobControl::new();
+        let id = jc.add_job("sleep 100".to_string(), None);
+        assert_eq!(jc.list_jobs().len(), 1);
+
+        jc.cleanup();
+        assert_eq!(jc.list_jobs().len(), 1);
+        assert_eq!(jc.get_job(id).unwrap().status, JobStatus::Running);
+    }
+}
