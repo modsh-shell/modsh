@@ -103,8 +103,8 @@
 - [x] Process group management — setpgid, tcsetpgrp wired into foreground/background
 
 ### 1.7 POSIX Compliance
-- [ ] Run against POSIX sh test suite
-- [ ] Document known deviations (if any)
+- [x] Run against POSIX sh test suite — 29 integration tests in `modsh-cli/tests/posix.rs`, 19 passing
+- [x] Document known deviations — see `POSIX.md` for 13 documented deviations
 
 ---
 
