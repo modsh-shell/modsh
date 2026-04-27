@@ -62,18 +62,25 @@ async fn main() -> Result<()> {
 }
 
 fn run_command(cmd: &str, _config: &Config) -> Result<()> {
-    use modsh_core::executor::Executor;
+    use modsh_core::builtins::BuiltinError;
+    use modsh_core::executor::{ExecError, Executor};
     use modsh_core::parser::parse;
 
     let ast = parse(cmd)?;
     let mut executor = Executor::new();
-    let status = executor.execute(&ast)?;
-
-    if !status.success() {
-        std::process::exit(i32::from(status.code));
+    match executor.execute(&ast) {
+        Ok(status) => {
+            if !status.success() {
+                std::process::exit(i32::from(status.code));
+            }
+            Ok(())
+        }
+        // `exit N` from a builtin should propagate N as the process exit code
+        Err(ExecError::Builtin(BuiltinError::Exit(code))) => {
+            std::process::exit(code);
+        }
+        Err(e) => Err(e.into()),
     }
-
-    Ok(())
 }
 
 fn run_script(file: &PathBuf, config: &Config) -> Result<()> {
