@@ -160,7 +160,6 @@ fn builtin_printf(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
             let mut width: Option<usize> = None;
             let mut precision: Option<usize> = None;
             let mut left_align = false;
-            let mut format_char = '\0';
 
             // Parse flags
             while let Some(&c) = chars.peek() {
@@ -204,7 +203,7 @@ fn builtin_printf(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
             }
 
             // Get format character
-            format_char = chars.next().unwrap_or('\0');
+            let format_char = chars.next().unwrap_or('\0');
 
             match format_char {
                 '%' => {
@@ -353,7 +352,7 @@ fn expand_escapes(s: &str) -> String {
     while let Some(ch) = chars.next() {
         if ch == '\\' {
             match chars.next() {
-                Some('\\') | None => result.push('\\'),
+                Some('\\') => result.push('\\'),
                 Some('a') => result.push('\x07'),
                 Some('b') => result.push('\x08'),
                 Some('e') => result.push('\x1b'),
@@ -529,7 +528,7 @@ fn builtin_alias(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
             if let Some(value) = state.aliases.get(*arg) {
                 println!("{}={}", arg, shlex::quote(value));
             } else {
-                return Err(BuiltinError::Generic(format!("alias: {}: not found", arg)));
+                return Err(BuiltinError::Generic(format!("alias: {arg}: not found")));
             }
         }
     }
@@ -590,8 +589,7 @@ fn builtin_set(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
                     'f' => state.options.noglob = true,
                     _ => {
                         return Err(BuiltinError::Generic(format!(
-                            "set: invalid option: -{}",
-                            c
+                            "set: invalid option: -{c}"
                         )))
                     }
                 }
@@ -607,8 +605,7 @@ fn builtin_set(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
                     'f' => state.options.noglob = false,
                     _ => {
                         return Err(BuiltinError::Generic(format!(
-                            "set: invalid option: +{}",
-                            c
+                            "set: invalid option: +{c}"
                         )))
                     }
                 }
@@ -646,6 +643,7 @@ fn builtin_shift(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
 
 /// Test builtin - evaluate conditional expressions
 /// Supports POSIX test operators: file tests, string tests, numeric tests
+#[allow(clippy::unnecessary_wraps)]
 fn builtin_test(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     // Handle [ ... ] syntax - check for closing ]
     let args = if args.last() == Some(&"]") {
@@ -751,8 +749,7 @@ where
 /// Check if file is readable
 fn is_readable(path: &str) -> bool {
     std::fs::metadata(path)
-        .map(|m| m.permissions().readonly() == false)
-        .unwrap_or(false)
+        .is_ok_and(|m| !m.permissions().readonly())
 }
 
 /// Check if file is writable
@@ -767,8 +764,7 @@ fn is_executable(path: &str) -> bool {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::metadata(path)
-            .map(|m| m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
+            .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
     }
     #[cfg(not(unix))]
     {
@@ -779,15 +775,13 @@ fn is_executable(path: &str) -> bool {
 /// Check if file has size > 0
 fn has_size(path: &str) -> bool {
     std::fs::metadata(path)
-        .map(|m| m.len() > 0)
-        .unwrap_or(false)
+        .is_ok_and(|m| m.len() > 0)
 }
 
 /// Check if path is a symlink
 fn is_symlink(path: &str) -> bool {
     std::fs::symlink_metadata(path)
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false)
+        .is_ok_and(|m| m.file_type().is_symlink())
 }
 
 /// Read builtin - read a line from stdin into variable(s)
@@ -847,7 +841,7 @@ fn builtin_read(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
 
     // Print prompt if provided
     if has_prompt {
-        print!("{}", prompt);
+        print!("{prompt}");
         let _ = io::Write::flush(&mut std::io::stdout());
     }
 
@@ -858,12 +852,12 @@ fn builtin_read(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
         Ok(0) => {
             // EOF reached - set variables to empty and return failure
             for name in &var_names {
-                state.env.insert(name.to_string(), String::new());
+                state.env.insert((*name).to_string(), String::new());
             }
-            return Ok(super::executor::ExitStatus {
+            Ok(super::executor::ExitStatus {
                 code: 1,
                 signaled: false,
-            });
+            })
         }
         Ok(_) => {
             // Remove trailing newline
@@ -890,19 +884,19 @@ fn builtin_read(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
                 for (i, name) in var_names.iter().enumerate() {
                     if i < last_idx {
                         // Assign single field
-                        let value = fields.get(i).unwrap_or(&"").to_string();
-                        state.env.insert(name.to_string(), value);
+                        let value = (*fields.get(i).unwrap_or(&"")).to_string();
+                        state.env.insert((*name).to_string(), value);
                     } else {
                         // Last variable gets remaining fields
                         let remaining: Vec<&str> = fields.iter().skip(i).copied().collect();
-                        state.env.insert(name.to_string(), remaining.join(" "));
+                        state.env.insert((*name).to_string(), remaining.join(" "));
                     }
                 }
             }
 
             Ok(super::executor::ExitStatus::SUCCESS)
         }
-        Err(e) => Err(BuiltinError::Generic(format!("read: {}", e))),
+        Err(e) => Err(BuiltinError::Generic(format!("read: {e}"))),
     }
 }
 
@@ -947,7 +941,7 @@ fn builtin_trap(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
             ("TTOU", 22), // SIGTTOU
         ]
         .iter()
-        .cloned()
+        .copied()
         .collect();
 
         if args.is_empty() {
@@ -957,8 +951,8 @@ fn builtin_trap(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
 
         // Check for -l (list signals)
         if args[0] == "-l" {
-            for (name, _num) in signals.iter() {
-                println!("{})", name);
+            for (name, _num) in &signals {
+                println!("{name})");
             }
             return Ok(super::executor::ExitStatus::SUCCESS);
         }
@@ -988,8 +982,7 @@ fn builtin_trap(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
                     Some(&num) => num,
                     None => {
                         return Err(BuiltinError::Generic(format!(
-                            "trap: {}: invalid signal specification",
-                            sig_arg
+                            "trap: {sig_arg}: invalid signal specification"
                         )));
                     }
                 }
@@ -1060,8 +1053,7 @@ fn builtin_jobs(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
 
 /// Parse a job specification string (e.g., "%1", "%%", "%-")
 fn parse_job_spec(spec: &str, builtin_name: &str) -> Result<usize, String> {
-    if spec.starts_with('%') {
-        let inner = &spec[1..];
+    if let Some(inner) = spec.strip_prefix('%') {
         match inner {
             "%" | "" => Ok(0),     // current job (special value)
             "-" => Ok(usize::MAX), // previous job (special value)
@@ -1103,6 +1095,7 @@ fn resolve_job_id(
 }
 
 /// Foreground builtin — bring job to foreground
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 fn builtin_fg(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
     let job_control = match state.job_control.as_mut() {
         Some(jc) => jc,

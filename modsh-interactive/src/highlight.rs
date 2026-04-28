@@ -105,8 +105,7 @@ impl Highlighter {
             }
             Token::Operator(_) | Token::Redirect(_) => Style::OPERATOR,
             Token::Comment(_) => Style::COMMENT,
-            Token::SingleQuoted(_) | Token::DoubleQuoted(_) => Style::ARG,
-            Token::Eof => Style::ARG,
+            Token::SingleQuoted(_) | Token::DoubleQuoted(_) | Token::Eof => Style::ARG,
         }
     }
 }

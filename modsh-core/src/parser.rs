@@ -799,7 +799,6 @@ impl Parser {
                         });
                     }
                 }
-                continue;
             }
             // No more patterns - only error if we haven't collected any
             if patterns.is_empty() {
@@ -835,7 +834,7 @@ impl Parser {
         }
     }
 
-    /// Check if token is a word-like token (Word, SingleQuoted, or DoubleQuoted)
+    /// Check if token is a word-like token (Word, `SingleQuoted`, or `DoubleQuoted`)
     fn is_word_token(token: &Token) -> bool {
         matches!(
             token,
@@ -847,8 +846,7 @@ impl Parser {
     fn word_value(token: &Token) -> Option<&str> {
         match token {
             Token::Word(w) => Some(w.as_str()),
-            Token::SingleQuoted(s) => Some(s.as_str()),
-            Token::DoubleQuoted(s) => Some(s.as_str()),
+            Token::SingleQuoted(s) | Token::DoubleQuoted(s) => Some(s.as_str()),
             _ => None,
         }
     }

@@ -186,7 +186,7 @@ impl<'a> Expander<'a> {
         }
 
         // Separate IFS whitespace characters (field terminators that collapse)
-        let ifs_whitespace: String = ifs.chars().filter(|c| c.is_ascii_whitespace()).collect();
+        let ifs_whitespace: String = ifs.chars().filter(char::is_ascii_whitespace).collect();
 
         let mut words = Vec::new();
         let mut current = String::new();
@@ -235,7 +235,7 @@ impl<'a> Expander<'a> {
 
         // Remove trailing empty field if it was added due to trailing separator
         // (but preserve internal empty fields)
-        while words.len() > 1 && words.last().map_or(false, |w| w.is_empty()) {
+        while words.len() > 1 && words.last().is_some_and(std::string::String::is_empty) {
             // Only remove if the second-to-last was also from a separator
             // Actually, POSIX says trailing separators don't create empty fields
             // at the end unless there were consecutive separators earlier
@@ -613,7 +613,7 @@ impl<'a> Expander<'a> {
         // POSIX: Strip trailing newlines from command output
         // Also strip \r for Windows-style line endings (\r\n)
         stdout = stdout
-            .trim_end_matches(|c| c == '\n' || c == '\r')
+            .trim_end_matches(['\n', '\r'])
             .to_string();
 
         Ok(stdout)
@@ -799,7 +799,7 @@ impl<'a> Expander<'a> {
     }
 
     /// Look up a user's home directory (Unix only)
-    /// Uses thread-safe getpwnam_r instead of getpwnam
+    /// Uses thread-safe `getpwnam_r` instead of getpwnam
     #[cfg(unix)]
     #[cfg_attr(not(unix), allow(dead_code))]
     fn get_user_home(username: &str) -> Option<String> {
@@ -817,7 +817,7 @@ impl<'a> Expander<'a> {
             getpwnam_r(
                 c_username.as_ptr(),
                 &mut pw,
-                buf.as_mut_ptr() as *mut c_char,
+                buf.as_mut_ptr().cast::<c_char>(),
                 buf.len(),
                 &mut result,
             )

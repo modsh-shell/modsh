@@ -68,6 +68,7 @@ impl ExitStatus {
 
 /// Shell options (set -e, set -x, etc.)
 #[derive(Debug, Clone, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ShellOptions {
     /// Exit on error (set -e)
     pub errexit: bool,
@@ -249,6 +250,7 @@ impl Executor {
     }
 
     /// Execute a function call
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     fn execute_function_call(
         &mut self,
         name: &str,
@@ -331,7 +333,7 @@ impl Executor {
                 self.job_control.update_status(job_id, JobStatus::Running);
 
                 // Print job info like bash: [job_id] process_group_id
-                println!("[{}] {}", job_id, pid);
+                println!("[{job_id}] {pid}");
 
                 // Return success immediately (background commands always return 0)
                 Ok(ExitStatus::SUCCESS)
@@ -438,7 +440,7 @@ impl Executor {
     }
 
     /// Expand aliases in a simple command
-    /// Returns a new SimpleCommand with aliases expanded
+    /// Returns a new `SimpleCommand` with aliases expanded
     /// Prevents infinite recursion by tracking expanded aliases
     fn expand_aliases(&self, cmd: &SimpleCommand) -> SimpleCommand {
         self.expand_aliases_recursive(cmd, &mut std::collections::HashSet::new())
@@ -466,7 +468,7 @@ impl Executor {
             // Parse the alias value into words
             let alias_words: Vec<String> = alias_value
                 .split_whitespace()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .collect();
 
             if !alias_words.is_empty() {
@@ -491,6 +493,7 @@ impl Executor {
         cmd.clone()
     }
 
+    #[allow(clippy::too_many_lines)]
     fn execute_simple(&mut self, cmd: &SimpleCommand) -> Result<ExitStatus, ExecError> {
         // Clear temporary files from previous command
         self.temp_files.clear();
@@ -589,7 +592,7 @@ impl Executor {
 
         // Check if it's a function call (functions take precedence over builtins)
         if self.functions.contains_key(program) {
-            let args_owned: Vec<String> = cmd.words[1..].iter().cloned().collect();
+            let args_owned: Vec<String> = cmd.words[1..].to_vec();
             return self.execute_function_call(program, &args_owned);
         }
 
@@ -666,14 +669,14 @@ impl Executor {
             let is_last = i == commands.len() - 1;
 
             // Create pipe for this stage (unless it's the last one)
-            let (read_end, write_end) = if !is_last {
+            let (read_end, write_end) = if is_last {
+                (None, None)
+            } else {
                 let mut pipe_fds: [libc::c_int; 2] = [-1, -1];
                 if unsafe { libc::pipe(pipe_fds.as_mut_ptr()) } == -1 {
                     return Err(ExecError::Io(std::io::Error::last_os_error()));
                 }
                 (Some(pipe_fds[0]), Some(pipe_fds[1]))
-            } else {
-                (None, None)
             };
 
             let pid = unsafe { libc::fork() };
@@ -876,18 +879,18 @@ impl Executor {
     /// Execute a sourced script file
     fn execute_source(&mut self, path: &str) -> Result<ExitStatus, ExecError> {
         // Check file metadata
-        let metadata = std::fs::metadata(path).map_err(|e| ExecError::Io(e))?;
+        let metadata = std::fs::metadata(path).map_err(ExecError::Io)?;
 
         // Ensure it's a file (not a directory)
         if !metadata.is_file() {
             return Err(ExecError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("{}: Is a directory", path),
+                format!("{path}: Is a directory"),
             )));
         }
 
         // Read the script content
-        let content = std::fs::read_to_string(path).map_err(|e| ExecError::Io(e))?;
+        let content = std::fs::read_to_string(path).map_err(ExecError::Io)?;
 
         // Parse the script
         let ast =

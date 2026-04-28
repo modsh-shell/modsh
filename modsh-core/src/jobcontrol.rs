@@ -139,6 +139,7 @@ impl JobControl {
     /// # Errors
     /// Returns an error if the job ID is not found or terminal control fails
     #[cfg(unix)]
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
     pub fn foreground(&mut self, id: usize) -> Result<i32, String> {
         let job = self.jobs.get(&id).ok_or("No such job")?;
         let pgid = job.pgid.ok_or("Job has no process group")?;
@@ -238,7 +239,7 @@ impl JobControl {
             if let Some(j) = self.jobs.get_mut(&id) {
                 j.status = JobStatus::Completed;
             }
-            i32::from(code)
+            code
         } else if libc::WIFSIGNALED(status) {
             if let Some(j) = self.jobs.get_mut(&id) {
                 j.status = JobStatus::Killed;
@@ -273,6 +274,7 @@ impl JobControl {
     /// # Errors
     /// Returns an error if the job ID is not found
     #[cfg(unix)]
+    #[allow(clippy::cast_possible_wrap)]
     pub fn background(&mut self, id: usize) -> Result<(), String> {
         let job = self.jobs.get_mut(&id).ok_or("No such job")?;
 

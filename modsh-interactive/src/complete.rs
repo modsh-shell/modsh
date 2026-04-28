@@ -135,7 +135,7 @@ impl CompletionEngine {
                 let name_str = name.to_string_lossy();
 
                 if name_str.starts_with(file_prefix) {
-                    let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                    let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
                     let text = if dir_part == "./" {
                         name_str.to_string()
                     } else {
