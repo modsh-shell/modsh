@@ -195,9 +195,9 @@ impl<'a> Expander<'a> {
         for ch in s.chars() {
             if ifs.contains(ch) {
                 // This is an IFS character
-                let is_whitespace = ifs_whitespace.contains(ch);
+                let ch_is_ws = ifs_whitespace.contains(ch);
 
-                if is_whitespace {
+                if ch_is_ws {
                     // IFS whitespace is a field terminator - consecutive ones collapse
                     if !current.is_empty() {
                         words.push(current);

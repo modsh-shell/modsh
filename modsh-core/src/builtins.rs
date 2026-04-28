@@ -59,8 +59,7 @@ pub fn get_builtin(name: &str) -> Option<BuiltinFn> {
         "." | "source" => Some(builtin_source),
         "set" => Some(builtin_set),
         "shift" => Some(builtin_shift),
-        "test" => Some(builtin_test),
-        "[" => Some(builtin_test),
+        "test" | "[" => Some(builtin_test),
         "read" => Some(builtin_read),
         "trap" => Some(builtin_trap),
         "jobs" => Some(builtin_jobs),
@@ -98,7 +97,7 @@ fn builtin_cd(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
             }
             Ok(super::executor::ExitStatus::SUCCESS)
         }
-        Err(e) => Err(BuiltinError::Generic(format!("cd: {}: {}", target, e))),
+        Err(e) => Err(BuiltinError::Generic(format!("cd: {target}: {e}"))),
     }
 }
 
@@ -142,6 +141,7 @@ fn builtin_echo(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
 
 /// Printf builtin - formatted output
 /// Supports POSIX format specifiers with width/precision: %s, %d, %i, %o, %u, %x, %X, %f, %c, %b (escape), %%
+#[allow(clippy::too_many_lines)]
 fn builtin_printf(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     if args.is_empty() {
         return Err(BuiltinError::Generic(
@@ -160,7 +160,7 @@ fn builtin_printf(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
             let mut width: Option<usize> = None;
             let mut precision: Option<usize> = None;
             let mut left_align = false;
-            let mut _format_char = '\0';
+            let mut format_char = '\0';
 
             // Parse flags
             while let Some(&c) = chars.peek() {
@@ -204,9 +204,9 @@ fn builtin_printf(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
             }
 
             // Get format character
-            _format_char = chars.next().unwrap_or('\0');
+            format_char = chars.next().unwrap_or('\0');
 
-            match _format_char {
+            match format_char {
                 '%' => {
                     output.push('%');
                 }
@@ -240,7 +240,7 @@ fn builtin_printf(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
                     // Unsigned octal
                     let arg = args.get(arg_idx).unwrap_or(&"0");
                     let val = arg.parse::<u64>().unwrap_or(0);
-                    let s = format!("{:o}", val);
+                    let s = format!("{val:o}");
                     output.push_str(&apply_width(&s, width, left_align));
                     arg_idx += 1;
                 }
@@ -248,7 +248,7 @@ fn builtin_printf(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
                     // Unsigned hex lowercase
                     let arg = args.get(arg_idx).unwrap_or(&"0");
                     let val = arg.parse::<u64>().unwrap_or(0);
-                    let s = format!("{:x}", val);
+                    let s = format!("{val:x}");
                     output.push_str(&apply_width(&s, width, left_align));
                     arg_idx += 1;
                 }
@@ -256,7 +256,7 @@ fn builtin_printf(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
                     // Unsigned hex uppercase
                     let arg = args.get(arg_idx).unwrap_or(&"0");
                     let val = arg.parse::<u64>().unwrap_or(0);
-                    let s = format!("{:X}", val);
+                    let s = format!("{val:X}");
                     output.push_str(&apply_width(&s, width, left_align));
                     arg_idx += 1;
                 }
@@ -265,7 +265,7 @@ fn builtin_printf(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
                     let arg = args.get(arg_idx).unwrap_or(&"0");
                     let val = arg.parse::<f64>().unwrap_or(0.0);
                     let prec = precision.unwrap_or(6);
-                    let s = format!("{:.*}", prec, val);
+                    let s = format!("{val:.prec$}");
                     output.push_str(&apply_width(&s, width, left_align));
                     arg_idx += 1;
                 }
@@ -308,23 +308,23 @@ fn builtin_printf(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
                 Some('n') => output.push('\n'),
                 Some('t') => output.push('\t'),
                 Some('r') => output.push('\r'),
-                Some('\\') => output.push('\\'),
+                Some('\\') | None => output.push('\\'),
                 Some('a') => output.push('\x07'), // BEL
                 Some('b') => output.push('\x08'), // BS
-                Some('f') => output.push('\x0C'), // FF
-                Some('v') => output.push('\x0B'), // VT
+                Some('e') => output.push('\x1b'), // ESC
+                Some('f') => output.push('\x0c'), // FF
+                Some('v') => output.push('\x0b'), // VT
                 Some(ch) => {
                     output.push('\\');
                     output.push(ch);
                 }
-                None => output.push('\\'),
             }
         } else {
             output.push(ch);
         }
     }
 
-    print!("{}", output);
+    print!("{output}");
     let _ = std::io::Write::flush(&mut std::io::stdout());
 
     Ok(super::executor::ExitStatus::SUCCESS)
@@ -336,9 +336,9 @@ fn apply_width(s: &str, width: Option<usize>, left_align: bool) -> String {
         Some(w) if s.len() < w => {
             let padding = " ".repeat(w - s.len());
             if left_align {
-                format!("{}{}", s, padding)
+                format!("{s}{padding}")
             } else {
-                format!("{}{}", padding, s)
+                format!("{padding}{s}")
             }
         }
         _ => s.to_string(),
@@ -353,14 +353,15 @@ fn expand_escapes(s: &str) -> String {
     while let Some(ch) = chars.next() {
         if ch == '\\' {
             match chars.next() {
-                Some('n') => result.push('\n'),
-                Some('t') => result.push('\t'),
-                Some('r') => result.push('\r'),
-                Some('\\') => result.push('\\'),
+                Some('\\') | None => result.push('\\'),
                 Some('a') => result.push('\x07'),
                 Some('b') => result.push('\x08'),
-                Some('f') => result.push('\x0C'),
-                Some('v') => result.push('\x0B'),
+                Some('e') => result.push('\x1b'),
+                Some('f') => result.push('\x0c'),
+                Some('n') => result.push('\n'),
+                Some('r') => result.push('\r'),
+                Some('t') => result.push('\t'),
+                Some('v') => result.push('\x0b'),
                 Some('0') => {
                     // Octal escape \0NNN (POSIX: 1-3 digits, max \0377 = 255)
                     let mut octal = String::new();
@@ -491,8 +492,7 @@ fn builtin_source(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     // Verify file exists and is readable
     if !std::path::Path::new(path).exists() {
         return Err(BuiltinError::Generic(format!(
-            "{}: No such file or directory",
-            path
+            "{path}: No such file or directory"
         )));
     }
 

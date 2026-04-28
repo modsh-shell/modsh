@@ -322,10 +322,10 @@ impl Executor {
                 // pid is guaranteed to be positive here (not -1, not 0)
                 let child_pid = pid as libc::pid_t;
                 // After child's setpgid(0, 0), pgid equals child's pid
-                let pgid = child_pid as u32;
+                let job_pgid = child_pid as u32;
 
                 // Add job to job control
-                let job_id = self.job_control.add_job(command_str.clone(), Some(pgid));
+                let job_id = self.job_control.add_job(command_str.clone(), Some(job_pgid));
 
                 // Update job status to running
                 self.job_control.update_status(job_id, JobStatus::Running);

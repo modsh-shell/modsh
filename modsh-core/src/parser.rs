@@ -799,24 +799,24 @@ impl Parser {
                         });
                     }
                 }
-            } else {
-                // No more patterns - only error if we haven't collected any
-                if patterns.is_empty() {
-                    return Err(ParseError::Expected {
-                        expected: "pattern word".to_string(),
-                        got: self.peek().clone(),
-                    });
-                }
-                // If we've collected patterns but hit a non-word, expect )
-                if matches!(self.peek(), Token::Operator(Operator::RParen)) {
-                    self.advance();
-                    break;
-                }
+                continue;
+            }
+            // No more patterns - only error if we haven't collected any
+            if patterns.is_empty() {
                 return Err(ParseError::Expected {
-                    expected: "| or )".to_string(),
+                    expected: "pattern word".to_string(),
                     got: self.peek().clone(),
                 });
             }
+            // If we've collected patterns but hit a non-word, expect )
+            if matches!(self.peek(), Token::Operator(Operator::RParen)) {
+                self.advance();
+                break;
+            }
+            return Err(ParseError::Expected {
+                expected: "| or )".to_string(),
+                got: self.peek().clone(),
+            });
         }
         Ok(patterns)
     }
