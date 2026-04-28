@@ -7,6 +7,7 @@ repos:
         language: system
         pass_filenames: false
         files: \\.rs$
+        stages: [pre-commit]
 
       - id: cargo-clippy
         name: Cargo clippy
@@ -14,6 +15,7 @@ repos:
         language: system
         pass_filenames: false
         files: \\.rs$
+        stages: [pre-commit]
 
       - id: cargo-check
         name: Cargo check
@@ -21,6 +23,7 @@ repos:
         language: system
         pass_filenames: false
         files: \\.rs$
+        stages: [pre-commit]
 
       - id: cargo-test
         name: Cargo test
@@ -28,3 +31,4 @@ repos:
         language: system
         pass_filenames: false
         files: \\.rs$
+        stages: [pre-commit]
