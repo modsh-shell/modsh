@@ -100,6 +100,25 @@ pub struct Executor {
     pub job_control: JobControl,
 }
 
+/// Convert a command to a string representation for job control
+fn command_to_string_impl(cmd: &Command) -> String {
+    match cmd {
+        Command::Simple(s) => s.words.join(" "),
+        Command::Pipeline(_) => "pipeline".to_string(),
+        Command::And(_, _) => "and-list".to_string(),
+        Command::Or(_, _) => "or-list".to_string(),
+        Command::List(_, _) => "list".to_string(),
+        Command::Background(c) => format!("{} &", command_to_string_impl(c)),
+        Command::Subshell(_) => "subshell".to_string(),
+        Command::Group(_) => "group".to_string(),
+        Command::If(_) => "if-statement".to_string(),
+        Command::For(_) => "for-loop".to_string(),
+        Command::While(_) => "while-loop".to_string(),
+        Command::Case(_) => "case-statement".to_string(),
+        Command::Function(_) => "function".to_string(),
+    }
+}
+
 impl Executor {
     /// Create a new executor
     #[must_use]
@@ -168,7 +187,7 @@ impl Executor {
             Command::For(for_loop) => self.execute_for(for_loop),
             Command::While(while_loop) => self.execute_while(while_loop),
             Command::Case(case_stmt) => self.execute_case(case_stmt),
-            Command::Function(func_def) => self.execute_function_def(func_def),
+            Command::Function(func_def) => Ok(self.execute_function_def(func_def)),
         }
     }
 
@@ -242,11 +261,11 @@ impl Executor {
     fn execute_function_def(
         &mut self,
         func_def: &crate::parser::FunctionDefinition,
-    ) -> Result<ExitStatus, ExecError> {
+    ) -> ExitStatus {
         // Register the function in the function table
         self.functions
             .insert(func_def.name.clone(), func_def.clone());
-        Ok(ExitStatus::SUCCESS)
+        ExitStatus::SUCCESS
     }
 
     /// Execute a function call
@@ -286,7 +305,7 @@ impl Executor {
     /// Execute a command in the background using fork
     #[cfg(unix)]
     fn execute_background(&mut self, cmd: &Command) -> Result<ExitStatus, ExecError> {
-        let command_str = self.command_to_string(cmd);
+        let command_str = command_to_string_impl(cmd);
 
         // Fork the process
         let pid = unsafe { libc::fork() };
@@ -321,10 +340,10 @@ impl Executor {
             }
             pid => {
                 // Parent process
-                // pid is guaranteed to be positive here (not -1, not 0)
+                // SAFETY: fork() in parent returns positive child pid (never -1 or 0)
                 let child_pid = pid as libc::pid_t;
-                // After child's setpgid(0, 0), pgid equals child's pid
-                let job_pgid = child_pid as u32;
+                let job_pgid = u32::try_from(child_pid)
+                    .expect("fork() returns positive child pid in parent process");
 
                 // Add job to job control
                 let job_id = self.job_control.add_job(command_str.clone(), Some(job_pgid));
@@ -418,25 +437,6 @@ impl Executor {
     fn execute_subshell(&mut self, cmd: &Command) -> Result<ExitStatus, ExecError> {
         eprintln!("modsh: subshell execution not supported on this platform");
         self.execute(cmd)
-    }
-
-    /// Convert a command to a string representation for job control
-    fn command_to_string(&self, cmd: &Command) -> String {
-        match cmd {
-            Command::Simple(s) => s.words.join(" "),
-            Command::Pipeline(_) => "pipeline".to_string(),
-            Command::And(_, _) => "and-list".to_string(),
-            Command::Or(_, _) => "or-list".to_string(),
-            Command::List(_, _) => "list".to_string(),
-            Command::Background(c) => format!("{} &", self.command_to_string(c)),
-            Command::Subshell(_) => "subshell".to_string(),
-            Command::Group(_) => "group".to_string(),
-            Command::If(_) => "if-statement".to_string(),
-            Command::For(_) => "for-loop".to_string(),
-            Command::While(_) => "while-loop".to_string(),
-            Command::Case(_) => "case-statement".to_string(),
-            Command::Function(_) => "function-def".to_string(),
-        }
     }
 
     /// Expand aliases in a simple command
@@ -533,16 +533,7 @@ impl Executor {
                             .open(&redirect.target)?,
                     );
                 }
-                (None | Some(1), RedirectKind::Heredoc) => {
-                    use std::io::Write;
-                    let mut temp_file = tempfile::NamedTempFile::new()?;
-                    temp_file.write_all(redirect.target.as_bytes())?;
-                    temp_file.write_all(b"\n")?;
-                    let file = temp_file.reopen()?;
-                    stdin = std::process::Stdio::from(file);
-                    self.temp_files.push(temp_file);
-                }
-                (None | Some(1), RedirectKind::Herestring) => {
+                (None | Some(1), RedirectKind::Heredoc | RedirectKind::Herestring) => {
                     use std::io::Write;
                     let mut temp_file = tempfile::NamedTempFile::new()?;
                     temp_file.write_all(redirect.target.as_bytes())?;

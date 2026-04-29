@@ -352,7 +352,7 @@ fn expand_escapes(s: &str) -> String {
     while let Some(ch) = chars.next() {
         if ch == '\\' {
             match chars.next() {
-                Some('\\') => result.push('\\'),
+                Some('\\') | None => result.push('\\'),
                 Some('a') => result.push('\x07'),
                 Some('b') => result.push('\x08'),
                 Some('e') => result.push('\x1b'),
@@ -388,7 +388,6 @@ fn expand_escapes(s: &str) -> String {
                     result.push('\\');
                     result.push(ch);
                 }
-                None => result.push('\\'),
             }
         } else {
             result.push(ch);
@@ -951,7 +950,7 @@ fn builtin_trap(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
 
         // Check for -l (list signals)
         if args[0] == "-l" {
-            for (name, _num) in &signals {
+            for name in signals.keys() {
                 println!("{name})");
             }
             return Ok(super::executor::ExitStatus::SUCCESS);
@@ -973,11 +972,7 @@ fn builtin_trap(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
                 num
             } else {
                 // Try to look up by name
-                let name = if sig_arg.starts_with("SIG") {
-                    &sig_arg[3..]
-                } else {
-                    *sig_arg
-                };
+                let name = sig_arg.strip_prefix("SIG").unwrap_or(sig_arg);
                 match signals.get(name) {
                     Some(&num) => num,
                     None => {
@@ -1007,13 +1002,10 @@ fn builtin_trap(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
 
 /// Jobs builtin — list background jobs
 fn builtin_jobs(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
-    let job_control = match state.job_control.as_mut() {
-        Some(jc) => jc,
-        None => {
-            return Err(BuiltinError::Generic(
-                "jobs: job control not available".to_string(),
-            ));
-        }
+    let Some(job_control) = state.job_control.as_mut() else {
+        return Err(BuiltinError::Generic(
+            "jobs: job control not available".to_string(),
+        ));
     };
 
     let long_format = args.iter().any(|&a| a == "-l" || a == "-p");
@@ -1097,13 +1089,10 @@ fn resolve_job_id(
 /// Foreground builtin — bring job to foreground
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 fn builtin_fg(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
-    let job_control = match state.job_control.as_mut() {
-        Some(jc) => jc,
-        None => {
-            return Err(BuiltinError::Generic(
-                "fg: job control not available".to_string(),
-            ));
-        }
+    let Some(job_control) = state.job_control.as_mut() else {
+        return Err(BuiltinError::Generic(
+            "fg: job control not available".to_string(),
+        ));
     };
 
     let job_spec = if args.is_empty() { "%" } else { args[0] };
@@ -1130,13 +1119,10 @@ fn builtin_fg(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
 
 /// Background builtin — continue stopped job in background
 fn builtin_bg(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
-    let job_control = match state.job_control.as_mut() {
-        Some(jc) => jc,
-        None => {
-            return Err(BuiltinError::Generic(
-                "bg: job control not available".to_string(),
-            ));
-        }
+    let Some(job_control) = state.job_control.as_mut() else {
+        return Err(BuiltinError::Generic(
+            "bg: job control not available".to_string(),
+        ));
     };
 
     let job_spec = if args.is_empty() { "%" } else { args[0] };
