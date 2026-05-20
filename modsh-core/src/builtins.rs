@@ -24,6 +24,10 @@ pub enum BuiltinError {
     /// Continue loop iteration
     #[error("continue")]
     Continue,
+    /// Exec command (replace current process)
+    /// Contains the command name and arguments
+    #[error("exec")]
+    Exec(String, Vec<String>),
 }
 
 /// Result type for builtins
@@ -73,6 +77,7 @@ pub fn get_builtin(name: &str) -> Option<BuiltinFn> {
         "bg" => Some(builtin_bg),
         "break" => Some(builtin_break),
         "continue" => Some(builtin_continue),
+        "exec" => Some(builtin_exec),
         _ => None,
     }
 }
@@ -1059,6 +1064,18 @@ fn builtin_break(_args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
 /// Continue loop iteration builtin
 fn builtin_continue(_args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     Err(BuiltinError::Continue)
+}
+
+/// Exec builtin - replace current process with new command
+fn builtin_exec(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
+    if args.is_empty() {
+        return Err(BuiltinError::Generic("exec: no command specified".to_string()));
+    }
+
+    let cmd = args[0].to_string();
+    let cmd_args = args[1..].iter().map(|s| s.to_string()).collect();
+
+    Err(BuiltinError::Exec(cmd, cmd_args))
 }
 
 /// Parse a job specification string (e.g., "%1", "%%", "%-")

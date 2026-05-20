@@ -967,17 +967,6 @@ impl Executor {
         Err(ExecError::CommandNotFound(program.to_string()))
     }
 
-    /// Check if a character is in a range like a-z or A-Z
-    fn in_range(ch: char, range_str: &str) -> bool {
-        let parts: Vec<&str> = range_str.split('-').collect();
-        if parts.len() == 2 {
-            if let (Some(start), Some(end)) = (parts[0].chars().next(), parts[1].chars().next()) {
-                return ch >= start && ch <= end;
-            }
-        }
-        false
-    }
-
     /// Check if a character matches a character class pattern
     fn matches_char_class(ch: char, class_str: &str) -> bool {
         let mut i = 0;

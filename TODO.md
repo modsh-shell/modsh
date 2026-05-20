@@ -187,11 +187,12 @@
 
 **RECOMMENDING — for v0.1.0-beta and beyond**
 
-- [ ] **Implement `exec` builtin** — `modsh-core/src/builtins.rs`
+- [x] **Implement `exec` builtin** — `modsh-core/src/builtins.rs` + `modsh-cli/src/main.rs`
   - Required for: Process replacement patterns (shebang scripts)
   - Complexity: Medium
   - Priority: High (v0.1.0-beta, Phase 2 mid-cycle)
   - Impact: Enables proper script delegation patterns (`exec "$@"`)
+  - Status: ✅ COMPLETE — exec replaces current process in all modes (command, file, stdin, interactive)
 
 - [ ] Fix `builtin_trap` custom command handler — `modsh-core/src/builtins.rs` lines 993-995
   - Root cause: `trap CMD SIGNAL` form registers handler string but never executes it
@@ -258,9 +259,8 @@
 
 **What Needs Follow-up (v0.1.0-beta and beyond):**
 1. Lexer newline tokenization (affects multiline readability)
-2. break/continue builtins (affects loop control)
-3. exec builtin (affects process replacement)
-4. Additional POSIX features (tail minor tests)
+2. Additional POSIX features (tail minor tests)
+3. Custom trap command handlers (signal-based error handling)
 
 ---
 

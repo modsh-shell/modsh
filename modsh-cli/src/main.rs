@@ -65,6 +65,7 @@ fn run_command(cmd: &str, _config: &Config) -> Result<()> {
     use modsh_core::builtins::BuiltinError;
     use modsh_core::executor::{ExecError, Executor};
     use modsh_core::parser::parse;
+    use std::ffi::CString;
 
     let ast = parse(cmd)?;
     let mut executor = Executor::new();
@@ -79,11 +80,37 @@ fn run_command(cmd: &str, _config: &Config) -> Result<()> {
         Err(ExecError::Builtin(BuiltinError::Exit(code))) => {
             std::process::exit(code);
         }
+        // `exec` replaces the current process with the specified command
+        Err(ExecError::Builtin(BuiltinError::Exec(cmd_name, args))) => {
+            let original_cmd = cmd_name.clone();
+            let cmd_cstr = CString::new(cmd_name)
+                .map_err(|e| anyhow::anyhow!("exec: invalid command name: {}", e))?;
+            let mut argv: Vec<CString> = vec![cmd_cstr.clone()];
+            for arg in args {
+                argv.push(
+                    CString::new(arg)
+                        .map_err(|e| anyhow::anyhow!("exec: invalid argument: {}", e))?,
+                );
+            }
+            let mut argv_ptrs: Vec<*const std::ffi::c_char> =
+                argv.iter().map(|s| s.as_ptr()).collect();
+            argv_ptrs.push(std::ptr::null());
+
+            unsafe {
+                libc::execvp(cmd_cstr.as_ptr(), argv_ptrs.as_ptr());
+            }
+            // execvp only returns on error
+            Err(anyhow::anyhow!("exec: {}: {}", original_cmd, std::io::Error::last_os_error()))
+        }
         Err(e) => Err(e.into()),
     }
 }
 
 fn run_script(file: &PathBuf, _config: &Config) -> Result<()> {
+    use modsh_core::builtins::BuiltinError;
+    use modsh_core::executor::ExecError;
+    use std::ffi::CString;
+
     let content = std::fs::read_to_string(file)?;
 
     // Parse the entire script file as a complete script
@@ -91,11 +118,32 @@ fn run_script(file: &PathBuf, _config: &Config) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("parse error: {}", e))?;
 
     let mut executor = modsh_core::executor::Executor::new();
-    executor
-        .execute(&ast)
-        .map_err(|e| anyhow::anyhow!("execution error: {}", e))?;
+    match executor.execute(&ast) {
+        Ok(_) => Ok(()),
+        // `exec` replaces the current process with the specified command
+        Err(ExecError::Builtin(BuiltinError::Exec(cmd_name, args))) => {
+            let original_cmd = cmd_name.clone();
+            let cmd_cstr = CString::new(cmd_name)
+                .map_err(|e| anyhow::anyhow!("exec: invalid command name: {}", e))?;
+            let mut argv: Vec<CString> = vec![cmd_cstr.clone()];
+            for arg in args {
+                argv.push(
+                    CString::new(arg)
+                        .map_err(|e| anyhow::anyhow!("exec: invalid argument: {}", e))?,
+                );
+            }
+            let mut argv_ptrs: Vec<*const std::ffi::c_char> =
+                argv.iter().map(|s| s.as_ptr()).collect();
+            argv_ptrs.push(std::ptr::null());
 
-    Ok(())
+            unsafe {
+                libc::execvp(cmd_cstr.as_ptr(), argv_ptrs.as_ptr());
+            }
+            // execvp only returns on error
+            Err(anyhow::anyhow!("exec: {}: {}", original_cmd, std::io::Error::last_os_error()))
+        }
+        Err(e) => Err(anyhow::anyhow!("execution error: {}", e)),
+    }
 }
 
 #[allow(clippy::unnecessary_wraps)]
@@ -148,17 +196,57 @@ fn run_interactive(_config: &Config, _no_ai: bool) -> Result<()> {
                 // Execute
                 let start = std::time::Instant::now();
 
-                let result = parse(trimmed)
-                    .map_err(anyhow::Error::from)
-                    .and_then(|ast| executor.execute(&ast).map_err(anyhow::Error::from));
+                match parse(trimmed).map_err(anyhow::Error::from) {
+                    Ok(ast) => match executor.execute(&ast) {
+                        Ok(status) => {
+                            let duration =
+                                u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                            history.add_command(line.clone(), status.code, duration);
+                            prompt.set_exit_code(status.code);
+                        }
+                        // `exec` replaces the current process with the specified command
+                        Err(modsh_core::executor::ExecError::Builtin(
+                            modsh_core::builtins::BuiltinError::Exec(cmd_name, args),
+                        )) => {
+                            use std::ffi::CString;
+                            let original_cmd = cmd_name.clone();
+                            if let Ok(cmd_cstr) = CString::new(cmd_name) {
+                                let mut argv: Vec<CString> = vec![cmd_cstr.clone()];
+                                for arg in args {
+                                    if let Ok(arg_cstr) = CString::new(arg) {
+                                        argv.push(arg_cstr);
+                                    } else {
+                                        eprintln!("Error: exec: invalid argument");
+                                        continue;
+                                    }
+                                }
+                                let mut argv_ptrs: Vec<*const std::ffi::c_char> =
+                                    argv.iter().map(|s| s.as_ptr()).collect();
+                                argv_ptrs.push(std::ptr::null());
 
-                match result {
-                    Ok(status) => {
-                        let duration =
-                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                        history.add_command(line.clone(), status.code, duration);
-                        prompt.set_exit_code(status.code);
-                    }
+                                unsafe {
+                                    libc::execvp(cmd_cstr.as_ptr(), argv_ptrs.as_ptr());
+                                }
+                                // execvp only returns on error
+                                eprintln!(
+                                    "Error: exec: {}: {}",
+                                    original_cmd,
+                                    std::io::Error::last_os_error()
+                                );
+                                prompt.set_exit_code(1);
+                            } else {
+                                eprintln!("Error: exec: invalid command name");
+                                prompt.set_exit_code(1);
+                            }
+                        }
+                        Err(e) => {
+                            let duration =
+                                u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                            eprintln!("Error: {e}");
+                            history.add_command(line.clone(), 1, duration);
+                            prompt.set_exit_code(1);
+                        }
+                    },
                     Err(e) => {
                         let duration =
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -182,6 +270,10 @@ fn run_interactive(_config: &Config, _no_ai: bool) -> Result<()> {
 }
 
 fn run_stdin(_config: &Config) -> Result<()> {
+    use modsh_core::builtins::BuiltinError;
+    use modsh_core::executor::ExecError;
+    use std::ffi::CString;
+
     let mut buffer = String::new();
     io::stdin().read_to_string(&mut buffer)?;
 
@@ -190,11 +282,32 @@ fn run_stdin(_config: &Config) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("parse error: {}", e))?;
 
     let mut executor = modsh_core::executor::Executor::new();
-    executor
-        .execute(&ast)
-        .map_err(|e| anyhow::anyhow!("execution error: {}", e))?;
+    match executor.execute(&ast) {
+        Ok(_) => Ok(()),
+        // `exec` replaces the current process with the specified command
+        Err(ExecError::Builtin(BuiltinError::Exec(cmd_name, args))) => {
+            let original_cmd = cmd_name.clone();
+            let cmd_cstr = CString::new(cmd_name)
+                .map_err(|e| anyhow::anyhow!("exec: invalid command name: {}", e))?;
+            let mut argv: Vec<CString> = vec![cmd_cstr.clone()];
+            for arg in args {
+                argv.push(
+                    CString::new(arg)
+                        .map_err(|e| anyhow::anyhow!("exec: invalid argument: {}", e))?,
+                );
+            }
+            let mut argv_ptrs: Vec<*const std::ffi::c_char> =
+                argv.iter().map(|s| s.as_ptr()).collect();
+            argv_ptrs.push(std::ptr::null());
 
-    Ok(())
+            unsafe {
+                libc::execvp(cmd_cstr.as_ptr(), argv_ptrs.as_ptr());
+            }
+            // execvp only returns on error
+            Err(anyhow::anyhow!("exec: {}: {}", original_cmd, std::io::Error::last_os_error()))
+        }
+        Err(e) => Err(anyhow::anyhow!("execution error: {}", e)),
+    }
 }
 
 /// Configuration for modsh
