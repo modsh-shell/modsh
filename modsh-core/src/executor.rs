@@ -242,7 +242,6 @@ impl Executor {
                 }
                 Err(ExecError::Builtin(crate::builtins::BuiltinError::Continue)) => {
                     // Continue to next iteration
-                    continue;
                 }
                 Err(e) => return Err(e),
             }
@@ -268,7 +267,6 @@ impl Executor {
                 }
                 Err(ExecError::Builtin(crate::builtins::BuiltinError::Continue)) => {
                     // Continue to next iteration
-                    continue;
                 }
                 Err(e) => return Err(e),
             }
@@ -282,6 +280,7 @@ impl Executor {
     ) -> Result<ExitStatus, ExecError> {
         // Expand the case word
         let expanded_words = self.expand_simple_vars(&case_stmt.word);
+        #[allow(clippy::map_unwrap_or)]
         let case_value = expanded_words.first().map(String::as_str).unwrap_or("");
 
         // Try each clause until one matches
@@ -1000,8 +999,6 @@ impl Executor {
             match (p_chars.peek(), t_chars.peek()) {
                 // End of both pattern and text - match
                 (None, None) => return true,
-                // End of pattern but not text
-                (None, Some(_)) => return false,
                 // End of text but not pattern
                 (Some(_), None) => {
                     // Only match if remaining pattern is just '*'

@@ -84,16 +84,16 @@ fn run_command(cmd: &str, _config: &Config) -> Result<()> {
         Err(ExecError::Builtin(BuiltinError::Exec(cmd_name, args))) => {
             let original_cmd = cmd_name.clone();
             let cmd_cstr = CString::new(cmd_name)
-                .map_err(|e| anyhow::anyhow!("exec: invalid command name: {}", e))?;
-            let mut argv: Vec<CString> = vec![cmd_cstr.clone()];
+                .map_err(|e| anyhow::anyhow!("exec: invalid command name: {e}"))?;
+            let mut argv_cstrings: Vec<CString> = vec![cmd_cstr.clone()];
             for arg in args {
-                argv.push(
+                argv_cstrings.push(
                     CString::new(arg)
-                        .map_err(|e| anyhow::anyhow!("exec: invalid argument: {}", e))?,
+                        .map_err(|e| anyhow::anyhow!("exec: invalid argument: {e}"))?,
                 );
             }
             let mut argv_ptrs: Vec<*const std::ffi::c_char> =
-                argv.iter().map(|s| s.as_ptr()).collect();
+                argv_cstrings.iter().map(|s| s.as_ptr()).collect();
             argv_ptrs.push(std::ptr::null());
 
             unsafe {
@@ -115,7 +115,7 @@ fn run_script(file: &PathBuf, _config: &Config) -> Result<()> {
 
     // Parse the entire script file as a complete script
     let ast = modsh_core::parser::parse(&content)
-        .map_err(|e| anyhow::anyhow!("parse error: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("parse error: {e}"))?;
 
     let mut executor = modsh_core::executor::Executor::new();
     match executor.execute(&ast) {
@@ -124,16 +124,16 @@ fn run_script(file: &PathBuf, _config: &Config) -> Result<()> {
         Err(ExecError::Builtin(BuiltinError::Exec(cmd_name, args))) => {
             let original_cmd = cmd_name.clone();
             let cmd_cstr = CString::new(cmd_name)
-                .map_err(|e| anyhow::anyhow!("exec: invalid command name: {}", e))?;
-            let mut argv: Vec<CString> = vec![cmd_cstr.clone()];
+                .map_err(|e| anyhow::anyhow!("exec: invalid command name: {e}"))?;
+            let mut argv_cstrings: Vec<CString> = vec![cmd_cstr.clone()];
             for arg in args {
-                argv.push(
+                argv_cstrings.push(
                     CString::new(arg)
-                        .map_err(|e| anyhow::anyhow!("exec: invalid argument: {}", e))?,
+                        .map_err(|e| anyhow::anyhow!("exec: invalid argument: {e}"))?,
                 );
             }
             let mut argv_ptrs: Vec<*const std::ffi::c_char> =
-                argv.iter().map(|s| s.as_ptr()).collect();
+                argv_cstrings.iter().map(|s| s.as_ptr()).collect();
             argv_ptrs.push(std::ptr::null());
 
             unsafe {
@@ -211,17 +211,16 @@ fn run_interactive(_config: &Config, _no_ai: bool) -> Result<()> {
                             use std::ffi::CString;
                             let original_cmd = cmd_name.clone();
                             if let Ok(cmd_cstr) = CString::new(cmd_name) {
-                                let mut argv: Vec<CString> = vec![cmd_cstr.clone()];
+                                let mut argv_cstrings: Vec<CString> = vec![cmd_cstr.clone()];
                                 for arg in args {
                                     if let Ok(arg_cstr) = CString::new(arg) {
-                                        argv.push(arg_cstr);
+                                        argv_cstrings.push(arg_cstr);
                                     } else {
                                         eprintln!("Error: exec: invalid argument");
-                                        continue;
                                     }
                                 }
                                 let mut argv_ptrs: Vec<*const std::ffi::c_char> =
-                                    argv.iter().map(|s| s.as_ptr()).collect();
+                                    argv_cstrings.iter().map(|s| s.as_ptr()).collect();
                                 argv_ptrs.push(std::ptr::null());
 
                                 unsafe {
@@ -279,7 +278,7 @@ fn run_stdin(_config: &Config) -> Result<()> {
 
     // Parse the entire stdin buffer as a complete script
     let ast = modsh_core::parser::parse(&buffer)
-        .map_err(|e| anyhow::anyhow!("parse error: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("parse error: {e}"))?;
 
     let mut executor = modsh_core::executor::Executor::new();
     match executor.execute(&ast) {
@@ -288,16 +287,16 @@ fn run_stdin(_config: &Config) -> Result<()> {
         Err(ExecError::Builtin(BuiltinError::Exec(cmd_name, args))) => {
             let original_cmd = cmd_name.clone();
             let cmd_cstr = CString::new(cmd_name)
-                .map_err(|e| anyhow::anyhow!("exec: invalid command name: {}", e))?;
-            let mut argv: Vec<CString> = vec![cmd_cstr.clone()];
+                .map_err(|e| anyhow::anyhow!("exec: invalid command name: {e}"))?;
+            let mut argv_cstrings: Vec<CString> = vec![cmd_cstr.clone()];
             for arg in args {
-                argv.push(
+                argv_cstrings.push(
                     CString::new(arg)
-                        .map_err(|e| anyhow::anyhow!("exec: invalid argument: {}", e))?,
+                        .map_err(|e| anyhow::anyhow!("exec: invalid argument: {e}"))?,
                 );
             }
             let mut argv_ptrs: Vec<*const std::ffi::c_char> =
-                argv.iter().map(|s| s.as_ptr()).collect();
+                argv_cstrings.iter().map(|s| s.as_ptr()).collect();
             argv_ptrs.push(std::ptr::null());
 
             unsafe {

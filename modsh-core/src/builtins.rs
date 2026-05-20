@@ -1073,7 +1073,7 @@ fn builtin_exec(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     }
 
     let cmd = args[0].to_string();
-    let cmd_args = args[1..].iter().map(|s| s.to_string()).collect();
+    let cmd_args = args[1..].iter().map(ToString::to_string).collect();
 
     Err(BuiltinError::Exec(cmd, cmd_args))
 }
