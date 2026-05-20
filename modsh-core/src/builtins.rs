@@ -599,11 +599,7 @@ fn builtin_set(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
                     'x' => state.options.xtrace = true,
                     'u' => state.options.nounset = true,
                     'f' => state.options.noglob = true,
-                    _ => {
-                        return Err(BuiltinError::Generic(format!(
-                            "set: invalid option: -{c}"
-                        )))
-                    }
+                    _ => return Err(BuiltinError::Generic(format!("set: invalid option: -{c}"))),
                 }
             }
         } else if arg.starts_with('+') && arg.len() > 1 {
@@ -615,11 +611,7 @@ fn builtin_set(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
                     'x' => state.options.xtrace = false,
                     'u' => state.options.nounset = false,
                     'f' => state.options.noglob = false,
-                    _ => {
-                        return Err(BuiltinError::Generic(format!(
-                            "set: invalid option: +{c}"
-                        )))
-                    }
+                    _ => return Err(BuiltinError::Generic(format!("set: invalid option: +{c}"))),
                 }
             }
         } else {
@@ -760,8 +752,7 @@ where
 
 /// Check if file is readable
 fn is_readable(path: &str) -> bool {
-    std::fs::metadata(path)
-        .is_ok_and(|m| !m.permissions().readonly())
+    std::fs::metadata(path).is_ok_and(|m| !m.permissions().readonly())
 }
 
 /// Check if file is writable
@@ -775,8 +766,7 @@ fn is_executable(path: &str) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path)
-            .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+        std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
     }
     #[cfg(not(unix))]
     {
@@ -786,14 +776,12 @@ fn is_executable(path: &str) -> bool {
 
 /// Check if file has size > 0
 fn has_size(path: &str) -> bool {
-    std::fs::metadata(path)
-        .is_ok_and(|m| m.len() > 0)
+    std::fs::metadata(path).is_ok_and(|m| m.len() > 0)
 }
 
 /// Check if path is a symlink
 fn is_symlink(path: &str) -> bool {
-    std::fs::symlink_metadata(path)
-        .is_ok_and(|m| m.file_type().is_symlink())
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
 }
 
 /// Read builtin - read a line from stdin into variable(s)
@@ -1069,7 +1057,9 @@ fn builtin_continue(_args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResul
 /// Exec builtin - replace current process with new command
 fn builtin_exec(args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
     if args.is_empty() {
-        return Err(BuiltinError::Generic("exec: no command specified".to_string()));
+        return Err(BuiltinError::Generic(
+            "exec: no command specified".to_string(),
+        ));
     }
 
     let cmd = args[0].to_string();

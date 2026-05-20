@@ -312,7 +312,8 @@ impl JobControl {
 
             // Find the job containing this process
             // SAFETY: pid > 0 checked above, so u32 cast is safe
-            let pid_u32 = u32::try_from(pid).unwrap_or_else(|_| unreachable!("pid > 0 verified above"));
+            let pid_u32 =
+                u32::try_from(pid).unwrap_or_else(|_| unreachable!("pid > 0 verified above"));
             for job in self.jobs.values_mut() {
                 if job.processes.iter().any(|p| p.pid == pid_u32) {
                     if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {

@@ -612,9 +612,7 @@ impl<'a> Expander<'a> {
 
         // POSIX: Strip trailing newlines from command output
         // Also strip \r for Windows-style line endings (\r\n)
-        stdout = stdout
-            .trim_end_matches(['\n', '\r'])
-            .to_string();
+        stdout = stdout.trim_end_matches(['\n', '\r']).to_string();
 
         Ok(stdout)
     }

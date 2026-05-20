@@ -100,7 +100,11 @@ fn run_command(cmd: &str, _config: &Config) -> Result<()> {
                 libc::execvp(cmd_cstr.as_ptr(), argv_ptrs.as_ptr());
             }
             // execvp only returns on error
-            Err(anyhow::anyhow!("exec: {}: {}", original_cmd, std::io::Error::last_os_error()))
+            Err(anyhow::anyhow!(
+                "exec: {}: {}",
+                original_cmd,
+                std::io::Error::last_os_error()
+            ))
         }
         Err(e) => Err(e.into()),
     }
@@ -114,8 +118,8 @@ fn run_script(file: &PathBuf, _config: &Config) -> Result<()> {
     let content = std::fs::read_to_string(file)?;
 
     // Parse the entire script file as a complete script
-    let ast = modsh_core::parser::parse(&content)
-        .map_err(|e| anyhow::anyhow!("parse error: {e}"))?;
+    let ast =
+        modsh_core::parser::parse(&content).map_err(|e| anyhow::anyhow!("parse error: {e}"))?;
 
     let mut executor = modsh_core::executor::Executor::new();
     match executor.execute(&ast) {
@@ -140,9 +144,13 @@ fn run_script(file: &PathBuf, _config: &Config) -> Result<()> {
                 libc::execvp(cmd_cstr.as_ptr(), argv_ptrs.as_ptr());
             }
             // execvp only returns on error
-            Err(anyhow::anyhow!("exec: {}: {}", original_cmd, std::io::Error::last_os_error()))
+            Err(anyhow::anyhow!(
+                "exec: {}: {}",
+                original_cmd,
+                std::io::Error::last_os_error()
+            ))
         }
-        Err(e) => Err(anyhow::anyhow!("execution error: {}", e)),
+        Err(e) => Err(anyhow::anyhow!("execution error: {e}")),
     }
 }
 
@@ -277,8 +285,8 @@ fn run_stdin(_config: &Config) -> Result<()> {
     io::stdin().read_to_string(&mut buffer)?;
 
     // Parse the entire stdin buffer as a complete script
-    let ast = modsh_core::parser::parse(&buffer)
-        .map_err(|e| anyhow::anyhow!("parse error: {e}"))?;
+    let ast =
+        modsh_core::parser::parse(&buffer).map_err(|e| anyhow::anyhow!("parse error: {e}"))?;
 
     let mut executor = modsh_core::executor::Executor::new();
     match executor.execute(&ast) {
@@ -303,9 +311,13 @@ fn run_stdin(_config: &Config) -> Result<()> {
                 libc::execvp(cmd_cstr.as_ptr(), argv_ptrs.as_ptr());
             }
             // execvp only returns on error
-            Err(anyhow::anyhow!("exec: {}: {}", original_cmd, std::io::Error::last_os_error()))
+            Err(anyhow::anyhow!(
+                "exec: {}: {}",
+                original_cmd,
+                std::io::Error::last_os_error()
+            ))
         }
-        Err(e) => Err(anyhow::anyhow!("execution error: {}", e)),
+        Err(e) => Err(anyhow::anyhow!("execution error: {e}")),
     }
 }
 

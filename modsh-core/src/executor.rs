@@ -298,10 +298,7 @@ impl Executor {
         Ok(ExitStatus::SUCCESS)
     }
 
-    fn execute_function_def(
-        &mut self,
-        func_def: &crate::parser::FunctionDefinition,
-    ) -> ExitStatus {
+    fn execute_function_def(&mut self, func_def: &crate::parser::FunctionDefinition) -> ExitStatus {
         // Register the function in the function table
         self.functions
             .insert(func_def.name.clone(), func_def.clone());
@@ -386,7 +383,9 @@ impl Executor {
                     .expect("fork() returns positive child pid in parent process");
 
                 // Add job to job control
-                let job_id = self.job_control.add_job(command_str.clone(), Some(job_pgid));
+                let job_id = self
+                    .job_control
+                    .add_job(command_str.clone(), Some(job_pgid));
 
                 // Update job status to running
                 self.job_control.update_status(job_id, JobStatus::Running);
@@ -1010,8 +1009,8 @@ impl Executor {
                 // Both have characters
                 (Some(&'*'), Some(_)) => {
                     p_chars.next(); // consume '*'
-                    // '*' matches zero or more characters
-                    // Try matching rest of pattern at each position
+                                    // '*' matches zero or more characters
+                                    // Try matching rest of pattern at each position
                     for _ in 0..=text.len() {
                         let remaining_text = t_chars.clone().collect::<String>();
                         let remaining_pattern = p_chars.clone().collect::<String>();
