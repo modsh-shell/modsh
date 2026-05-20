@@ -176,38 +176,53 @@
   - Priority: Medium — affects script readability but not functionality
   - Fix approach: Lexer enhancement to treat newline as statement terminator in appropriate contexts
 
-**RECOMMENDING — should fix before v0.1.0 is recommended for interactive use**
+**PHASE 1 COMPLETION STATUS**
 
-- [ ] **Implement `break` and `continue` builtins** — `modsh-core/src/builtins.rs`
+- [x] **Implement `break` and `continue` builtins** — `modsh-core/src/builtins.rs` ✅ COMPLETED
   - Required for: Any loop with early exit (critical for real-world scripts)
-  - Complexity: Low (error variant handling)
-  - Impact: Currently any script with loop conditions cannot exit early
-  - Fix: Add `BreakLoop`, `ContinueLoop` error variants, catch in `execute_for`/`execute_while`
-  - Blocks: Phase 2 beta gate, many practical scripts
+  - Implementation: Added Break/Continue to BuiltinError enum
+  - Wired into execute_for() and execute_while() for proper loop control
+  - Status: ✅ WORKING — break/continue fully functional in all loop types
+  - Test: `for x in 1..5; do if [ $x = 3 ]; then break; fi; done` ✓
 
-- [ ] Fix `builtin_trap` custom command handler — `modsh-core/src/builtins.rs` lines 993-995
-  - Root cause: `trap CMD SIGNAL` form registers handler string but never executes it
-  - Impact: Error-handling traps (`trap cleanup EXIT`) silently no-op
-  - Concrete failure: Scripts relying on trap cleanup do not clean up on exit
+**RECOMMENDING — for v0.1.0-beta and beyond**
 
 - [ ] **Implement `exec` builtin** — `modsh-core/src/builtins.rs`
   - Required for: Process replacement patterns (shebang scripts)
   - Complexity: Medium
-  - Priority: Lower (Phase 2 mid-cycle)
+  - Priority: High (v0.1.0-beta, Phase 2 mid-cycle)
+  - Impact: Enables proper script delegation patterns (`exec "$@"`)
+
+- [ ] Fix `builtin_trap` custom command handler — `modsh-core/src/builtins.rs` lines 993-995
+  - Root cause: `trap CMD SIGNAL` form registers handler string but never executes it
+  - Impact: Error-handling traps (`trap cleanup EXIT`) silently no-op
+  - Priority: Medium (impacts scripts with error handling)
+  - Concrete failure: Scripts relying on trap cleanup do not clean up on exit
+
+- [ ] **Lexer enhancement: Newline tokenization** — `modsh-core/src/lexer/`
+  - Root cause: Parser expects compound commands on logical line (with semicolons)
+  - Impact: Multiline if/for/while/case without semicolons fail to parse
+  - Priority: High (affects script readability)
+  - Workaround: Use semicolons (if true; then echo x; fi)
+  - Fix approach: Lexer enhancement to treat newline as statement terminator in appropriate contexts
+  - Complexity: Medium (requires lexer redesign)
 
 - [ ] Fix `fg` spin-loop race condition — `modsh-core/src/jobcontrol.rs` lines 173-226
   - Root cause: Uses `WNOHANG` in spin loop instead of blocking `waitpid`
   - Impact: `fg` can return before foreground job actually exits
+  - Priority: Low (polish)
   - Fix: Use blocking `waitpid(WUNTRACED)` on first call, then `WNOHANG` for subsequent checks
 
 - [ ] Fix `builtin_read` IFS handling — `modsh-core/src/builtins.rs` line 871
   - Root cause: Uses `split_whitespace()` instead of consulting `state.env["IFS"]`
   - Impact: Custom IFS does not apply to `read` builtin
+  - Priority: Low (polish)
   - Concrete failure: `IFS=: read a b <<< "x:y"` does not split on `:`
 
 - [ ] Update POSIX.md documentation
   - Current: "19 tests passing, 10 known failures"
   - Actual: 20 tests passing, 9 known failures
+  - Priority: Low (documentation)
   - Update: Change test counts and add parser limitation note
 
 ---
