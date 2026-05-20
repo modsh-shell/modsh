@@ -234,7 +234,18 @@ impl Executor {
         for word in words {
             // Set loop variable in environment
             self.env.insert(for_loop.var.clone(), word);
-            last_status = self.execute(&for_loop.body)?;
+            match self.execute(&for_loop.body) {
+                Ok(status) => last_status = status,
+                Err(ExecError::Builtin(crate::builtins::BuiltinError::Break)) => {
+                    // Break out of loop
+                    break;
+                }
+                Err(ExecError::Builtin(crate::builtins::BuiltinError::Continue)) => {
+                    // Continue to next iteration
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
         }
         Ok(last_status)
     }
@@ -249,7 +260,18 @@ impl Executor {
             if !cond_status.success() {
                 break;
             }
-            last_status = self.execute(&while_loop.body)?;
+            match self.execute(&while_loop.body) {
+                Ok(status) => last_status = status,
+                Err(ExecError::Builtin(crate::builtins::BuiltinError::Break)) => {
+                    // Break out of loop
+                    break;
+                }
+                Err(ExecError::Builtin(crate::builtins::BuiltinError::Continue)) => {
+                    // Continue to next iteration
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
         }
         Ok(last_status)
     }

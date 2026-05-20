@@ -18,6 +18,12 @@ pub enum BuiltinError {
     /// Source a file (contains file path)
     #[error("source {0}")]
     Source(String),
+    /// Break from loop
+    #[error("break")]
+    Break,
+    /// Continue loop iteration
+    #[error("continue")]
+    Continue,
 }
 
 /// Result type for builtins
@@ -65,6 +71,8 @@ pub fn get_builtin(name: &str) -> Option<BuiltinFn> {
         "jobs" => Some(builtin_jobs),
         "fg" => Some(builtin_fg),
         "bg" => Some(builtin_bg),
+        "break" => Some(builtin_break),
+        "continue" => Some(builtin_continue),
         _ => None,
     }
 }
@@ -1041,6 +1049,16 @@ fn builtin_jobs(args: &[&str], state: &mut ShellState<'_>) -> BuiltinResult {
     }
 
     Ok(super::executor::ExitStatus::SUCCESS)
+}
+
+/// Break from loop builtin
+fn builtin_break(_args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
+    Err(BuiltinError::Break)
+}
+
+/// Continue loop iteration builtin
+fn builtin_continue(_args: &[&str], _state: &mut ShellState<'_>) -> BuiltinResult {
+    Err(BuiltinError::Continue)
 }
 
 /// Parse a job specification string (e.g., "%1", "%%", "%-")
