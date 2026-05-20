@@ -32,3 +32,10 @@ repos:
         pass_filenames: false
         files: \\.rs$
         stages: [pre-commit]
+
+      - id: cargo-audit
+        name: Cargo audit
+        entry: cargo audit
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
