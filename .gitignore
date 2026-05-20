@@ -44,7 +44,16 @@ context.db
 *.pem
 *.key
 *.p12
+
+# Agents and memory
 .skill/
 .cursor/rules/skill-context.md
 .windsurf/rules/skill-context.md
+.claude/
+.harness-mem/
+agents/
+CLAUDE.md
+hooks/
 .claude/commands/
+out/
+Plans.md

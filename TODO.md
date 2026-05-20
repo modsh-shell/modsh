@@ -71,6 +71,7 @@
 - [x] Glob/pathname expansion — *, ?, [abc] patterns, no-match-returns-pattern behavior
 - [x] Tilde expansion — ~/ (current user), ~user (other users on Unix via libc getpwnam)
 - [x] Unit tests — basic tests + 80+ edge case tests for lexer, parser, expander
+- [ ] **BLOCKING:** Wire expander into executor — expand command arguments, for-loop words, case patterns (see §1.8)
 
 ### 1.4 Executor
 - [x] Fork/exec pipeline
@@ -81,6 +82,8 @@
 - [x] Background execution (&) — true fork with process groups, job tracking
 - [x] Subshell execution — true fork with waitpid, proper exit status propagation
 - [x] Unit tests — 40+ tests covering commands, pipelines, operators, subshells, background, builtins
+- [ ] **BLOCKING:** Implement for-loop variable binding — currently drops loop variable (see §1.8)
+- [ ] **BLOCKING:** Implement case-statement pattern matching — currently runs all clauses (see §1.8)
 
 ### 1.5 Builtins
 - [x] `cd`, `pwd`
@@ -95,6 +98,10 @@
 - [x] `test` / `[`
 - [x] `read`
 - [x] `trap`
+- [ ] **BLOCKING:** `break`, `continue` — required for loops with early exit (gate for Phase 2)
+- [ ] **BLOCKING:** `exec` — required for shebang script delegation (gate for Phase 2)
+- [ ] `eval` — evaluate string as commands
+- [ ] `wait` — wait for background jobs to complete
 
 ### 1.6 Job Control
 - [x] Foreground/background execution — tcsetpgrp, waitpid, killpg(SIGCONT) implemented
@@ -105,6 +112,63 @@
 ### 1.7 POSIX Compliance
 - [x] Run against POSIX sh test suite — 29 integration tests in `modsh-cli/tests/posix.rs`, 19 passing
 - [x] Document known deviations — see `POSIX.md` for 13 documented deviations
+
+### 1.8 Correctness Fixes — Phase 1 Completion
+
+**BLOCKING — must fix before v0.1.0 final (affects all script execution modes)**
+
+- [ ] **Wire expander into executor** — `modsh-core/src/executor.rs:execute_simple()`
+  - Root cause: `execute_simple` passes raw token strings to external commands and builtins without calling `Expander::expand()`
+  - Impact: Variables like `$HOME` do not expand in command arguments; for-loop words; case patterns; while conditions
+  - Concrete failure: `echo $HOME` prints empty line instead of home directory path
+  - Code path: `execute_simple()` lines 496-635 must call expander before dispatch
+  - Affects: 6 of 9 ignored POSIX tests
+
+- [ ] **Implement for-loop variable binding** — `modsh-core/src/executor.rs:execute_for()` lines 213-229
+  - Root cause: Loop variable is explicitly discarded (`let _ = word;` line 226)
+  - Impact: Every iteration of a for loop runs with the same (pre-loop) environment
+  - Concrete failure: `for x in a b c; do echo $x; done` prints three empty lines instead of `a`, `b`, `c`
+  - Fix: Store `word` value into `state.env` before executing loop body
+
+- [ ] **Implement case-statement pattern matching** — `modsh-core/src/executor.rs:execute_case()` lines 247-259
+  - Root cause: No pattern matching logic; all clause bodies execute unconditionally
+  - Impact: All branches of a case statement run; only first matching pattern should run
+  - Concrete failure: `case $x in a) echo A;; b) echo B;; esac` prints both `A` and `B`
+  - Fix: Implement POSIX pattern matching (glob-style) and break after first match
+
+- [ ] **Fix `--file` mode script parsing** — `modsh-cli/src/main.rs:run_script()` lines 86-99
+  - Root cause: Iterates `content.lines()` and executes each non-blank line individually
+  - Impact: Any multiline construct (if/for/while/case/function/heredoc) is broken
+  - Concrete failure: Script with `if true; then\n  echo yes\nfi` fails to parse
+  - Fix: Use streaming parser approach (e.g., accumulate lines until parser.is_complete())
+  - Blocks: `.modshrc` loading, script files with control flow
+
+- [ ] **Implement `--stdin` script execution** — `modsh-cli/src/main.rs:run_stdin()` lines 184-197
+  - Root cause: Reads stdin but execution loop body is empty (TODO stub)
+  - Impact: Piping scripts to modsh produces no output
+  - Concrete failure: `echo 'echo hello' | modsh` produces no output
+  - Fix: Implement accumulator pattern (similar to `--file` fix) to handle streaming input
+
+**RECOMMENDING — should fix before v0.1.0 is recommended for interactive use**
+
+- [ ] Fix `builtin_trap` custom command handler — `modsh-core/src/builtins.rs` lines 993-995
+  - Root cause: `trap CMD SIGNAL` form registers handler string but never executes it
+  - Impact: Error-handling traps (`trap cleanup EXIT`) silently no-op
+  - Concrete failure: Scripts relying on trap cleanup do not clean up on exit
+
+- [ ] Fix `fg` spin-loop race condition — `modsh-core/src/jobcontrol.rs` lines 173-226
+  - Root cause: Uses `WNOHANG` in spin loop instead of blocking `waitpid`
+  - Impact: `fg` can return before foreground job actually exits
+  - Fix: Use blocking `waitpid(WUNTRACED)` on first call, then `WNOHANG` for subsequent checks
+
+- [ ] Fix `builtin_read` IFS handling — `modsh-core/src/builtins.rs` line 871
+  - Root cause: Uses `split_whitespace()` instead of consulting `state.env["IFS"]`
+  - Impact: Custom IFS does not apply to `read` builtin
+  - Concrete failure: `IFS=: read a b <<< "x:y"` does not split on `:`
+
+- [ ] Update POSIX.md stale documentation — `POSIX.md` line 207
+  - Current: "19 tests passing, 10 known failures"
+  - Actual: 20 tests passing, 9 known failures (case_stmt was recently fixed)
 
 ---
 

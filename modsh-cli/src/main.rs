@@ -83,17 +83,17 @@ fn run_command(cmd: &str, _config: &Config) -> Result<()> {
     }
 }
 
-fn run_script(file: &PathBuf, config: &Config) -> Result<()> {
+fn run_script(file: &PathBuf, _config: &Config) -> Result<()> {
     let content = std::fs::read_to_string(file)?;
 
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
+    // Parse the entire script file as a complete script
+    let ast = modsh_core::parser::parse(&content)
+        .map_err(|e| anyhow::anyhow!("parse error: {}", e))?;
 
-        run_command(trimmed, config)?;
-    }
+    let mut executor = modsh_core::executor::Executor::new();
+    executor
+        .execute(&ast)
+        .map_err(|e| anyhow::anyhow!("execution error: {}", e))?;
 
     Ok(())
 }
@@ -185,13 +185,14 @@ fn run_stdin(_config: &Config) -> Result<()> {
     let mut buffer = String::new();
     io::stdin().read_to_string(&mut buffer)?;
 
-    for line in buffer.lines() {
-        let trimmed = line.trim();
-        if !trimmed.is_empty() && !trimmed.starts_with('#') {
-            // Execute each line
-            // TODO: Batch execution for efficiency
-        }
-    }
+    // Parse the entire stdin buffer as a complete script
+    let ast = modsh_core::parser::parse(&buffer)
+        .map_err(|e| anyhow::anyhow!("parse error: {}", e))?;
+
+    let mut executor = modsh_core::executor::Executor::new();
+    executor
+        .execute(&ast)
+        .map_err(|e| anyhow::anyhow!("execution error: {}", e))?;
 
     Ok(())
 }

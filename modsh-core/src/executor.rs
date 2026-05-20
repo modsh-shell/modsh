@@ -25,6 +25,9 @@ pub enum ExecError {
     /// Builtin command error
     #[error("builtin error: {0}")]
     Builtin(#[from] crate::builtins::BuiltinError),
+    /// Expansion error
+    #[error("expansion error: {0}")]
+    Expand(#[from] crate::expander::ExpandError),
 }
 
 /// Result of command execution
@@ -214,16 +217,23 @@ impl Executor {
         let words: Vec<String> = match &for_loop.words {
             None => {
                 // No "in" clause - iterate over "$@" (positional parameters)
-                // TODO: Get positional parameters from shell state
-                vec![]
+                self.positional_params.clone()
             }
-            Some(words) => words.clone(),
+            Some(words) => {
+                // Expand each word in the list before iterating
+                let mut expanded = Vec::new();
+                for word in words {
+                    let vals = self.expand_simple_vars(word);
+                    expanded.extend(vals);
+                }
+                expanded
+            }
         };
 
         let mut last_status = ExitStatus::SUCCESS;
         for word in words {
-            // TODO: Set loop variable in environment
-            let _ = word;
+            // Set loop variable in environment
+            self.env.insert(for_loop.var.clone(), word);
             last_status = self.execute(&for_loop.body)?;
         }
         Ok(last_status)
@@ -248,14 +258,23 @@ impl Executor {
         &mut self,
         case_stmt: &crate::parser::CaseStatement,
     ) -> Result<ExitStatus, ExecError> {
-        // TODO: Pattern matching against case_stmt.word
-        let mut last_status = ExitStatus::SUCCESS;
-        for (_patterns, body) in &case_stmt.clauses {
-            // TODO: Check if word matches any pattern
-            last_status = self.execute(body)?;
-            // TODO: Break after first match (or continue for ;&)
+        // Expand the case word
+        let expanded_words = self.expand_simple_vars(&case_stmt.word);
+        let case_value = expanded_words.first().map(String::as_str).unwrap_or("");
+
+        // Try each clause until one matches
+        for (patterns, body) in &case_stmt.clauses {
+            // Check if any pattern in this clause matches
+            for pattern in patterns {
+                if Self::matches_pattern(case_value, pattern) {
+                    // Found a match - execute this body and return
+                    return self.execute(body);
+                }
+            }
         }
-        Ok(last_status)
+
+        // No match found
+        Ok(ExitStatus::SUCCESS)
     }
 
     fn execute_function_def(
@@ -589,6 +608,13 @@ impl Executor {
 
         // Check if it's a builtin
         if let Some(builtin) = crate::builtins::get_builtin(program) {
+            // Expand variables in builtin arguments
+            let expanded_args: Vec<String> = args
+                .iter()
+                .flat_map(|arg| self.expand_simple_vars(arg))
+                .collect();
+            let expanded_args_refs: Vec<&str> = expanded_args.iter().map(String::as_str).collect();
+
             // TODO: Apply redirects to builtin output
             let mut state = crate::builtins::ShellState {
                 env: &mut self.env,
@@ -597,7 +623,7 @@ impl Executor {
                 options: &mut self.shell_options,
                 job_control: Some(&mut self.job_control),
             };
-            match builtin(&args, &mut state) {
+            match builtin(&expanded_args_refs, &mut state) {
                 Ok(status) => return Ok(status),
                 Err(crate::builtins::BuiltinError::Source(path)) => {
                     return self.execute_source(&path);
@@ -616,9 +642,15 @@ impl Executor {
         // Search in PATH
         let program_path = self.find_in_path(program)?;
 
+        // Expand variables in arguments for external commands
+        let expanded_args: Vec<String> = args
+            .iter()
+            .flat_map(|arg| self.expand_simple_vars(arg))
+            .collect();
+
         let mut command = std::process::Command::new(&program_path);
         command
-            .args(&args)
+            .args(&expanded_args)
             .current_dir(&self.cwd)
             .stdin(stdin)
             .stdout(stdout)
@@ -911,6 +943,196 @@ impl Executor {
         }
 
         Err(ExecError::CommandNotFound(program.to_string()))
+    }
+
+    /// Check if a character is in a range like a-z or A-Z
+    fn in_range(ch: char, range_str: &str) -> bool {
+        let parts: Vec<&str> = range_str.split('-').collect();
+        if parts.len() == 2 {
+            if let (Some(start), Some(end)) = (parts[0].chars().next(), parts[1].chars().next()) {
+                return ch >= start && ch <= end;
+            }
+        }
+        false
+    }
+
+    /// Check if a character matches a character class pattern
+    fn matches_char_class(ch: char, class_str: &str) -> bool {
+        let mut i = 0;
+        let chars: Vec<char> = class_str.chars().collect();
+
+        while i < chars.len() {
+            // Check for range pattern (a-z)
+            if i + 2 < chars.len() && chars[i + 1] == '-' {
+                if ch >= chars[i] && ch <= chars[i + 2] {
+                    return true;
+                }
+                i += 3;
+            } else if chars[i] == ch {
+                return true;
+            } else {
+                i += 1;
+            }
+        }
+        false
+    }
+
+    /// Check if a string matches a POSIX shell pattern (glob-style)
+    /// Supports: *, ?, [abc], [!abc], [a-z]
+    fn matches_pattern(text: &str, pattern: &str) -> bool {
+        // Simple pattern matching for POSIX shell case statements
+        // This is a basic implementation without full glob support
+        let mut t_chars = text.chars().peekable();
+        let mut p_chars = pattern.chars().peekable();
+
+        loop {
+            match (p_chars.peek(), t_chars.peek()) {
+                // End of both pattern and text - match
+                (None, None) => return true,
+                // End of pattern but not text
+                (None, Some(_)) => return false,
+                // End of text but not pattern
+                (Some(_), None) => {
+                    // Only match if remaining pattern is just '*'
+                    if p_chars.clone().all(|c| c == '*') {
+                        return true;
+                    }
+                    return false;
+                }
+                // Both have characters
+                (Some(&'*'), Some(_)) => {
+                    p_chars.next(); // consume '*'
+                    // '*' matches zero or more characters
+                    // Try matching rest of pattern at each position
+                    for _ in 0..=text.len() {
+                        let remaining_text = t_chars.clone().collect::<String>();
+                        let remaining_pattern = p_chars.clone().collect::<String>();
+                        if Self::matches_pattern(&remaining_text, &remaining_pattern) {
+                            return true;
+                        }
+                        t_chars.next();
+                    }
+                    return false;
+                }
+                (Some(&'?'), Some(_)) => {
+                    p_chars.next();
+                    t_chars.next();
+                    // '?' matches exactly one character
+                }
+                (Some(&'['), Some(_)) => {
+                    // Character class [abc] or [!abc] or [a-z]
+                    p_chars.next(); // consume '['
+                    let mut negated = false;
+                    if p_chars.peek() == Some(&'!') {
+                        negated = true;
+                        p_chars.next();
+                    }
+
+                    let mut char_class = String::new();
+                    while p_chars.peek() != Some(&']') && p_chars.peek().is_some() {
+                        char_class.push(p_chars.next().unwrap());
+                    }
+
+                    if p_chars.peek() == Some(&']') {
+                        p_chars.next(); // consume ']'
+                    }
+
+                    let text_char = t_chars.next().unwrap();
+                    let matched = Self::matches_char_class(text_char, &char_class);
+
+                    if matched == negated {
+                        return false;
+                    }
+                }
+                (Some(&c), Some(&tc)) if c == tc => {
+                    p_chars.next();
+                    t_chars.next();
+                }
+                (Some(&'\\'), Some(_)) => {
+                    // Escaped character
+                    p_chars.next();
+                    if let Some(&escaped) = p_chars.peek() {
+                        p_chars.next();
+                        if t_chars.next() != Some(escaped) {
+                            return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+    }
+
+    /// Simple variable expansion for basic $VAR and ${VAR} patterns
+    /// Returns a Vec to handle word splitting from glob/expansion
+    fn expand_simple_vars(&self, word: &str) -> Vec<String> {
+        let mut result = String::new();
+        let mut chars = word.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if ch == '$' {
+                if let Some(&next_ch) = chars.peek() {
+                    match next_ch {
+                        '{' => {
+                            // ${VAR} or ${VAR:-default}
+                            chars.next(); // consume '{'
+                            let mut var_name = String::new();
+                            let mut end_found = false;
+
+                            for ch in &mut chars {
+                                if ch == '}' {
+                                    end_found = true;
+                                    break;
+                                }
+                                // Simple: just extract until '}'
+                                // TODO: handle :- and other operators
+                                var_name.push(ch);
+                            }
+
+                            if end_found {
+                                if let Some(val) = self.env.get(&var_name) {
+                                    result.push_str(val);
+                                }
+                            } else {
+                                // Unclosed ${, treat literally
+                                result.push('$');
+                                result.push('{');
+                                result.push_str(&var_name);
+                            }
+                        }
+                        'a'..='z' | 'A'..='Z' | '_' | '0'..='9' => {
+                            // $VAR
+                            let mut var_name = String::new();
+                            while let Some(&ch) = chars.peek() {
+                                if ch.is_alphanumeric() || ch == '_' {
+                                    var_name.push(ch);
+                                    chars.next();
+                                } else {
+                                    break;
+                                }
+                            }
+
+                            if let Some(val) = self.env.get(&var_name) {
+                                result.push_str(val);
+                            }
+                        }
+                        _ => {
+                            // Not a valid variable, keep the $
+                            result.push('$');
+                        }
+                    }
+                } else {
+                    // $ at end of string
+                    result.push('$');
+                }
+            } else {
+                result.push(ch);
+            }
+        }
+
+        vec![result]
     }
 }
 
